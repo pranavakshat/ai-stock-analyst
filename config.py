@@ -22,6 +22,9 @@ OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")           # ChatGPT
 GOOGLE_API_KEY      = os.getenv("GOOGLE_API_KEY", "")           # Gemini
 XAI_API_KEY         = os.getenv("XAI_API_KEY", "")              # Grok
 
+# ── Market context ───────────────────────────────────────────────────────────
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")    # newsapi.org — free, 100 req/day
+
 # ── Email (Resend) ────────────────────────────────────────────────────────────
 RESEND_API_KEY  = os.getenv("RESEND_API_KEY", "")
 EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT", "pranav.akshat.2@gmail.com")
