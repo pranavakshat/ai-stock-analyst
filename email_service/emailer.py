@@ -35,9 +35,10 @@ def _build_html(all_picks: dict[str, list[dict]], today: str) -> str:
         else:
             rows = ""
             for pick in sorted(picks, key=lambda p: p["rank"]):
-                conf  = pick.get("confidence", "Medium")
-                bg, fg = CONFIDENCE_COLORS.get(conf, ("#f3f4f6", "#374151"))
+                conf      = pick.get("confidence", "Medium")
+                bg, fg    = CONFIDENCE_COLORS.get(conf, ("#f3f4f6", "#374151"))
                 direction = pick.get("direction", "LONG").upper()
+                alloc     = pick.get("allocation_pct", 20.0)
                 dir_bg    = "#dcfce7" if direction == "LONG" else "#fee2e2"
                 dir_fg    = "#166534" if direction == "LONG" else "#991b1b"
                 dir_arrow = "&#9650; LONG" if direction == "LONG" else "&#9660; SHORT"
@@ -51,6 +52,11 @@ def _build_html(all_picks: dict[str, list[dict]], today: str) -> str:
                     <span style="background:{dir_bg};color:{dir_fg};font-size:11px;
                                  font-weight:700;padding:2px 8px;border-radius:999px;">
                       {dir_arrow}
+                    </span>
+                    &nbsp;
+                    <span style="background:#ede9fe;color:#5b21b6;font-size:11px;
+                                 font-weight:700;padding:2px 8px;border-radius:999px;">
+                      {alloc:.0f}% alloc
                     </span>
                     &nbsp;
                     <span style="background:{bg};color:{fg};font-size:11px;

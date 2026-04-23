@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     rank            INTEGER NOT NULL,           -- 1-5
     ticker          TEXT    NOT NULL,           -- e.g. "AAPL"
     direction       TEXT    DEFAULT 'LONG',     -- "LONG" or "SHORT"
+    allocation_pct  REAL    DEFAULT 20.0,       -- portfolio % allocated to this pick (all 5 sum to 100)
     reasoning       TEXT,                       -- model's explanation
     confidence      TEXT,                       -- "High" / "Medium" / "Low"
     raw_response    TEXT,                       -- full raw API response (for debugging)

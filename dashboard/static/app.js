@@ -93,6 +93,7 @@ async function loadPicks(dateStr) {
             const dirBg  = dir === "LONG" ? "#dcfce7" : "#fee2e2";
             const dirFg  = dir === "LONG" ? "#166534" : "#991b1b";
             const dirLbl = dir === "LONG" ? "▲ LONG" : "▼ SHORT";
+            const alloc  = p.allocation_pct != null ? Number(p.allocation_pct).toFixed(0) + "%" : "20%";
             return `
           <div class="pick-row">
             <div class="pick-rank" style="color:${meta.color}">#${p.rank}</div>
@@ -102,6 +103,9 @@ async function loadPicks(dateStr) {
                 <span style="background:${dirBg};color:${dirFg};font-size:11px;
                              font-weight:700;padding:2px 8px;border-radius:999px;
                              display:inline-block;margin-left:4px;">${dirLbl}</span>
+                <span style="background:#ede9fe;color:#5b21b6;font-size:11px;
+                             font-weight:700;padding:2px 8px;border-radius:999px;
+                             display:inline-block;margin-left:4px;">${alloc}</span>
                 <span class="badge badge-${p.confidence}" style="margin-left:4px;">${p.confidence}</span>
               </div>
               <div class="pick-reasoning">${p.reasoning || ""}</div>

@@ -53,6 +53,9 @@ def init_db():
         if "direction" not in cols:
             conn.execute("ALTER TABLE predictions ADD COLUMN direction TEXT DEFAULT 'LONG'")
             logger.info("Migration: added direction column to predictions")
+        if "allocation_pct" not in cols:
+            conn.execute("ALTER TABLE predictions ADD COLUMN allocation_pct REAL DEFAULT 20.0")
+            logger.info("Migration: added allocation_pct column to predictions")
     logger.info("Database initialised at %s", _get_db_path())
 
 
@@ -72,14 +75,16 @@ def save_predictions(date: str, model_name: str, picks: list[dict], raw_response
         )
         for pick in picks:
             conn.execute(
-                """INSERT INTO predictions (date, model_name, rank, ticker, direction, reasoning, confidence, raw_response)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO predictions (date, model_name, rank, ticker, direction,
+                       allocation_pct, reasoning, confidence, raw_response)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     date,
                     model_name,
                     pick.get("rank", 0),
                     pick.get("ticker", "").upper(),
                     pick.get("direction", "LONG").upper(),
+                    float(pick.get("allocation_pct", 20.0)),
                     pick.get("reasoning", ""),
                     pick.get("confidence", "Medium"),
                     raw_response,

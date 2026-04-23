@@ -5,7 +5,6 @@ models/base.py — Shared parsing utilities used by every model adapter.
 import json
 import logging
 import re
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,19 +50,38 @@ def parse_picks(raw: str, model_name: str) -> tuple[list[dict], str]:
         if not ticker or ticker in seen_tickers:
             continue
         seen_tickers.add(ticker)
+
         direction = str(pick.get("direction", "LONG")).upper()
         if direction not in ("LONG", "SHORT"):
             direction = "LONG"
+
+        # Parse allocation — clamp to [5, 70], default to 20
+        try:
+            alloc = float(pick.get("allocation_pct", 20))
+            alloc = max(5.0, min(70.0, alloc))
+        except (TypeError, ValueError):
+            alloc = 20.0
+
         validated.append({
-            "rank":       int(pick.get("rank", i + 1)),
-            "ticker":     ticker,
-            "direction":  direction,
-            "reasoning":  str(pick.get("reasoning", "")),
-            "confidence": str(pick.get("confidence", "Medium")),
+            "rank":           int(pick.get("rank", i + 1)),
+            "ticker":         ticker,
+            "direction":      direction,
+            "allocation_pct": alloc,
+            "reasoning":      str(pick.get("reasoning", "")),
+            "confidence":     str(pick.get("confidence", "Medium")),
         })
 
-    logger.info("[%s] Parsed %d picks: %s", model_name, len(validated),
-                [p["ticker"] for p in validated])
+    # Normalize allocations so they always sum to exactly 100
+    if validated:
+        total = sum(p["allocation_pct"] for p in validated)
+        if total > 0 and abs(total - 100.0) > 0.5:   # only fix if meaningfully off
+            for p in validated:
+                p["allocation_pct"] = round(p["allocation_pct"] / total * 100, 1)
+            logger.info("[%s] Allocations normalized (original sum: %.1f)", model_name, total)
+
+    logger.info("[%s] Parsed %d picks: %s",
+                model_name, len(validated),
+                [(p["ticker"], f"{p['allocation_pct']}%") for p in validated])
     return validated, raw
 
 

@@ -114,24 +114,27 @@ def update_portfolios(target_date: str | None = None):
             save_portfolio_value(model_name, target_date, current_value, 0.0, 0.0)
             continue
 
-        # Equal-weight: split across all available picks
+        # Allocation-weighted: use each pick's allocation_pct
         available_picks = [p for p in model_picks if p["ticker"] in stock_results]
         if not available_picks:
             save_portfolio_value(model_name, target_date, current_value, 0.0, 0.0)
             continue
 
-        position_size = current_value / len(available_picks)
+        # Normalize allocations among picks that have EOD data
+        total_alloc = sum(p.get("allocation_pct", 20.0) for p in available_picks)
         new_value = 0.0
 
         for pick in available_picks:
+            alloc     = pick.get("allocation_pct", 20.0) / total_alloc  # normalized fraction
+            position  = current_value * alloc
             result    = stock_results[pick["ticker"]]
-            chg_pct   = result["price_change_pct"] / 100.0   # convert to decimal
+            chg_pct   = result["price_change_pct"] / 100.0
             direction = pick.get("direction", "LONG").upper()
             # LONG profits when price goes up; SHORT profits when price goes down
             if direction == "SHORT":
-                new_value += position_size * (1 - chg_pct)
+                new_value += position * (1 - chg_pct)
             else:
-                new_value += position_size * (1 + chg_pct)
+                new_value += position * (1 + chg_pct)
 
         daily_return     = new_value - current_value
         daily_return_pct = (daily_return / current_value * 100) if current_value else 0.0
