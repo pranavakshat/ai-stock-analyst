@@ -22,10 +22,10 @@ OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")           # ChatGPT
 GOOGLE_API_KEY      = os.getenv("GOOGLE_API_KEY", "")           # Gemini
 XAI_API_KEY         = os.getenv("XAI_API_KEY", "")              # Grok
 
-# ── Email (Gmail SMTP) ────────────────────────────────────────────────────────
-GMAIL_ADDRESS  = os.getenv("GMAIL_ADDRESS", "")      # sender Gmail address
-GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS", "")     # 16-char App Password (not your login password)
+# ── Email (Resend) ────────────────────────────────────────────────────────────
+RESEND_API_KEY  = os.getenv("RESEND_API_KEY", "")
 EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT", "pranav.akshat.2@gmail.com")
+EMAIL_FROM      = os.getenv("EMAIL_FROM", "AI Stock Analyst <onboarding@resend.dev>")
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 MORNING_HOUR   = int(os.getenv("MORNING_HOUR", 5))    # 5 AM  – query models + send email

@@ -15,6 +15,7 @@ yfinance==0.2.40
 
 # Email / utilities
 python-dotenv==1.0.1
+resend>=2.0.0
 
 # HTTP / JSON
 requests==2.32.3

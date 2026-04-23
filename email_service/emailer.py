@@ -1,14 +1,12 @@
 """
-email_service/emailer.py — Compile and send the daily AI stock digest via Gmail SMTP.
+email_service/emailer.py — Compile and send the daily AI stock digest via Resend.
 """
 
 import logging
-import smtplib
+import resend
 from datetime import date
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
-from config import GMAIL_ADDRESS, GMAIL_APP_PASS, EMAIL_RECIPIENT, MODELS
+from config import RESEND_API_KEY, EMAIL_RECIPIENT, EMAIL_FROM, MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +40,7 @@ def _build_html(all_picks: dict[str, list[dict]], today: str) -> str:
                 direction = pick.get("direction", "LONG").upper()
                 dir_bg    = "#dcfce7" if direction == "LONG" else "#fee2e2"
                 dir_fg    = "#166534" if direction == "LONG" else "#991b1b"
-                dir_arrow = "▲ LONG" if direction == "LONG" else "▼ SHORT"
+                dir_arrow = "&#9650; LONG" if direction == "LONG" else "&#9660; SHORT"
                 rows += f"""
                 <tr>
                   <td style="padding:10px 12px;font-size:22px;font-weight:700;
@@ -97,16 +95,15 @@ def _build_html(all_picks: dict[str, list[dict]], today: str) -> str:
     <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);
                 border-radius:12px;padding:28px 32px;margin-bottom:24px;text-align:center;">
       <h1 style="margin:0 0 4px;color:#fff;font-size:22px;font-weight:800;">
-        📈 AI Stock Analyst — Daily Picks
+        AI Stock Analyst &mdash; Daily Picks
       </h1>
       <p style="margin:0;color:#bfdbfe;font-size:14px;">{today}</p>
     </div>
 
     <!-- Intro blurb -->
     <p style="color:#374151;font-size:14px;margin-bottom:24px;line-height:1.6;">
-      Below are today's top 5 stock picks from each AI model, ranked by conviction.
+      Below are today's top picks from each AI model, ranked by conviction.
       Results and portfolio performance will be updated this evening after market close.
-      View the live dashboard for accuracy tracking and portfolio simulation.
     </p>
 
     <!-- Model sections -->
@@ -115,7 +112,7 @@ def _build_html(all_picks: dict[str, list[dict]], today: str) -> str:
     <!-- Footer -->
     <div style="text-align:center;padding:20px 0 32px;color:#9ca3af;font-size:12px;">
       Generated automatically by your AI Stock Analyst Agent &bull;
-      Not financial advice &bull; Past performance ≠ future results
+      Not financial advice &bull; Past performance does not guarantee future results
     </div>
   </div>
 </body>
@@ -127,54 +124,46 @@ def _build_plain_text(all_picks: dict[str, list[dict]], today: str) -> str:
     lines = [f"AI STOCK ANALYST — Daily Picks — {today}", "=" * 50, ""]
     for model_key, picks in all_picks.items():
         display = MODELS.get(model_key, {}).get("display", model_key)
-        lines.append(f"▶ {display}")
+        lines.append(f">> {display}")
         if not picks:
             lines.append("  (No picks — API unavailable)")
         else:
             for p in sorted(picks, key=lambda x: x["rank"]):
-                lines.append(f"  #{p['rank']} {p['ticker']} [{p.get('confidence','?')}]")
+                direction = p.get("direction", "LONG").upper()
+                lines.append(f"  #{p['rank']} {p['ticker']} [{direction}] [{p.get('confidence','?')}]")
                 lines.append(f"     {p.get('reasoning','')}")
         lines.append("")
-    lines.append("Not financial advice. Dashboard: your-app-url.railway.app")
+    lines.append("Not financial advice.")
     return "\n".join(lines)
 
 
 # ── Send ──────────────────────────────────────────────────────────────────────
 
 def send_daily_digest(all_picks: dict[str, list[dict]], today: str | None = None):
-    """Send the daily picks email. Raises on SMTP error."""
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASS:
-        logger.error("Gmail credentials not configured — skipping email.")
+    """Send the daily picks email via Resend."""
+    if not RESEND_API_KEY:
+        logger.error("RESEND_API_KEY not configured — skipping email.")
         return
 
     if today is None:
         today = date.today().strftime("%A, %B %d, %Y")
 
-    subject = f"📈 AI Stock Picks — {today}"
+    resend.api_key = RESEND_API_KEY
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = f"AI Stock Analyst <{GMAIL_ADDRESS}>"
-    msg["To"]      = EMAIL_RECIPIENT
-
-    plain = _build_plain_text(all_picks, today)
-    html  = _build_html(all_picks, today)
-
-    msg.attach(MIMEText(plain, "plain"))
-    msg.attach(MIMEText(html,  "html"))
+    subject   = f"AI Stock Picks — {today}"
+    html_body = _build_html(all_picks, today)
+    text_body = _build_plain_text(all_picks, today)
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASS)
-            server.sendmail(GMAIL_ADDRESS, EMAIL_RECIPIENT, msg.as_string())
-        logger.info("Daily digest sent to %s", EMAIL_RECIPIENT)
-    except smtplib.SMTPAuthenticationError:
-        logger.error(
-            "Gmail authentication failed. Make sure you're using an App Password "
-            "(not your regular Gmail password). "
-            "Enable 2FA then visit: https://myaccount.google.com/apppasswords"
-        )
-        raise
+        params: resend.Emails.SendParams = {
+            "from":    EMAIL_FROM,
+            "to":      [EMAIL_RECIPIENT],
+            "subject": subject,
+            "html":    html_body,
+            "text":    text_body,
+        }
+        response = resend.Emails.send(params)
+        logger.info("Daily digest sent via Resend. ID: %s", response.get("id", "unknown"))
     except Exception as exc:
-        logger.error("Failed to send email: %s", exc)
+        logger.error("Failed to send email via Resend: %s", exc)
         raise
