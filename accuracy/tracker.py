@@ -53,7 +53,9 @@ def score_predictions(target_date: str | None = None) -> dict[str, dict]:
 
         result     = stock_results[ticker]
         change_pct = result["price_change_pct"]
-        is_correct = change_pct > 0
+        direction  = pred.get("direction", "LONG").upper()
+        # LONG is correct if price went up; SHORT is correct if price went down
+        is_correct = (change_pct > 0) if direction == "LONG" else (change_pct < 0)
 
         save_accuracy_score(
             prediction_id=pred["id"],
@@ -124,7 +126,12 @@ def update_portfolios(target_date: str | None = None):
         for pick in available_picks:
             result    = stock_results[pick["ticker"]]
             chg_pct   = result["price_change_pct"] / 100.0   # convert to decimal
-            new_value += position_size * (1 + chg_pct)
+            direction = pick.get("direction", "LONG").upper()
+            # LONG profits when price goes up; SHORT profits when price goes down
+            if direction == "SHORT":
+                new_value += position_size * (1 - chg_pct)
+            else:
+                new_value += position_size * (1 + chg_pct)
 
         daily_return     = new_value - current_value
         daily_return_pct = (daily_return / current_value * 100) if current_value else 0.0

@@ -42,12 +42,17 @@ def get_conn():
 # ── Schema initialisation ─────────────────────────────────────────────────────
 
 def init_db():
-    """Create all tables if they don't exist yet."""
+    """Create all tables if they don't exist yet, and run migrations."""
     schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")
     with open(schema_path) as f:
         sql = f.read()
     with get_conn() as conn:
         conn.executescript(sql)
+        # Migration: add direction column to existing databases
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(predictions)").fetchall()]
+        if "direction" not in cols:
+            conn.execute("ALTER TABLE predictions ADD COLUMN direction TEXT DEFAULT 'LONG'")
+            logger.info("Migration: added direction column to predictions")
     logger.info("Database initialised at %s", _get_db_path())
 
 
@@ -67,13 +72,14 @@ def save_predictions(date: str, model_name: str, picks: list[dict], raw_response
         )
         for pick in picks:
             conn.execute(
-                """INSERT INTO predictions (date, model_name, rank, ticker, reasoning, confidence, raw_response)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO predictions (date, model_name, rank, ticker, direction, reasoning, confidence, raw_response)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     date,
                     model_name,
                     pick.get("rank", 0),
                     pick.get("ticker", "").upper(),
+                    pick.get("direction", "LONG").upper(),
                     pick.get("reasoning", ""),
                     pick.get("confidence", "Medium"),
                     raw_response,

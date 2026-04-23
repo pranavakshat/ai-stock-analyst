@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     model_name      TEXT    NOT NULL,           -- "claude", "chatgpt", etc.
     rank            INTEGER NOT NULL,           -- 1-5
     ticker          TEXT    NOT NULL,           -- e.g. "AAPL"
+    direction       TEXT    DEFAULT 'LONG',     -- "LONG" or "SHORT"
     reasoning       TEXT,                       -- model's explanation
     confidence      TEXT,                       -- "High" / "Medium" / "Low"
     raw_response    TEXT,                       -- full raw API response (for debugging)

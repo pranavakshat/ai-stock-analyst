@@ -39,12 +39,21 @@ def _build_html(all_picks: dict[str, list[dict]], today: str) -> str:
             for pick in sorted(picks, key=lambda p: p["rank"]):
                 conf  = pick.get("confidence", "Medium")
                 bg, fg = CONFIDENCE_COLORS.get(conf, ("#f3f4f6", "#374151"))
+                direction = pick.get("direction", "LONG").upper()
+                dir_bg    = "#dcfce7" if direction == "LONG" else "#fee2e2"
+                dir_fg    = "#166534" if direction == "LONG" else "#991b1b"
+                dir_arrow = "▲ LONG" if direction == "LONG" else "▼ SHORT"
                 rows += f"""
                 <tr>
                   <td style="padding:10px 12px;font-size:22px;font-weight:700;
                               color:{color};width:30px;">#{pick['rank']}</td>
                   <td style="padding:10px 12px;">
                     <strong style="font-size:16px;letter-spacing:0.05em;">{pick['ticker']}</strong>
+                    &nbsp;
+                    <span style="background:{dir_bg};color:{dir_fg};font-size:11px;
+                                 font-weight:700;padding:2px 8px;border-radius:999px;">
+                      {dir_arrow}
+                    </span>
                     &nbsp;
                     <span style="background:{bg};color:{fg};font-size:11px;
                                  font-weight:600;padding:2px 8px;border-radius:999px;">

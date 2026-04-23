@@ -88,18 +88,27 @@ async function loadPicks(dateStr) {
       if (!picks.length) {
         body = `<div class="no-picks">No picks returned for this date.</div>`;
       } else {
-        body = picks.map(p => `
+        body = picks.map(p => {
+            const dir    = (p.direction || "LONG").toUpperCase();
+            const dirBg  = dir === "LONG" ? "#dcfce7" : "#fee2e2";
+            const dirFg  = dir === "LONG" ? "#166534" : "#991b1b";
+            const dirLbl = dir === "LONG" ? "▲ LONG" : "▼ SHORT";
+            return `
           <div class="pick-row">
             <div class="pick-rank" style="color:${meta.color}">#${p.rank}</div>
             <div class="pick-body">
               <div>
                 <span class="pick-ticker">${p.ticker}</span>
-                <span class="badge badge-${p.confidence}">${p.confidence}</span>
+                <span style="background:${dirBg};color:${dirFg};font-size:11px;
+                             font-weight:700;padding:2px 8px;border-radius:999px;
+                             display:inline-block;margin-left:4px;">${dirLbl}</span>
+                <span class="badge badge-${p.confidence}" style="margin-left:4px;">${p.confidence}</span>
               </div>
               <div class="pick-reasoning">${p.reasoning || ""}</div>
             </div>
           </div>
-        `).join("");
+            `;
+          }).join("");
       }
 
       card.innerHTML = header + body;
@@ -330,12 +339,20 @@ async function loadHistory() {
           </div>
         `;
 
-        const chips = picks.sort((a, b) => a.rank - b.rank).map(p => `
+        const chips = picks.sort((a, b) => a.rank - b.rank).map(p => {
+          const dir    = (p.direction || "LONG").toUpperCase();
+          const dirBg  = dir === "LONG" ? "#dcfce7" : "#fee2e2";
+          const dirFg  = dir === "LONG" ? "#166534" : "#991b1b";
+          const dirLbl = dir === "LONG" ? "▲" : "▼";
+          return `
           <div class="pick-chip">
             <span class="chip-ticker">#${p.rank} ${p.ticker}</span>
+            <span style="background:${dirBg};color:${dirFg};font-size:10px;
+                         font-weight:700;padding:1px 6px;border-radius:999px;">${dirLbl} ${dir}</span>
             <span class="badge badge-${p.confidence}">${p.confidence}</span>
           </div>
-        `).join("");
+          `;
+        }).join("");
 
         card.innerHTML = header + `<div class="history-picks">${chips}</div>`;
         listEl.appendChild(card);

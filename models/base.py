@@ -51,9 +51,13 @@ def parse_picks(raw: str, model_name: str) -> tuple[list[dict], str]:
         if not ticker or ticker in seen_tickers:
             continue
         seen_tickers.add(ticker)
+        direction = str(pick.get("direction", "LONG")).upper()
+        if direction not in ("LONG", "SHORT"):
+            direction = "LONG"
         validated.append({
             "rank":       int(pick.get("rank", i + 1)),
             "ticker":     ticker,
+            "direction":  direction,
             "reasoning":  str(pick.get("reasoning", "")),
             "confidence": str(pick.get("confidence", "Medium")),
         })
