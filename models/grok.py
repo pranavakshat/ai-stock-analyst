@@ -24,6 +24,7 @@ def get_picks(market_context: str = "") -> tuple[list[dict], str]:
         client = OpenAI(
             api_key=XAI_API_KEY,
             base_url="https://api.x.ai/v1",
+            timeout=120.0,
         )
         response = client.chat.completions.create(
             model="grok-3",
@@ -31,7 +32,7 @@ def get_picks(market_context: str = "") -> tuple[list[dict], str]:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": build_user_prompt(market_context)},
             ],
-            max_tokens=1024,
+            max_tokens=2048,
             temperature=0.7,
         )
         raw = response.choices[0].message.content

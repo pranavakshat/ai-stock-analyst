@@ -141,10 +141,13 @@ def build_market_context() -> str:
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {pool.submit(fn): key for key, fn in tasks.items()}
-        for future in as_completed(futures):
+        for future in as_completed(futures, timeout=60):
             key = futures[future]
             try:
-                results[key] = future.result() or ""
+                results[key] = future.result(timeout=15) or ""
+            except TimeoutError:
+                logger.warning("Context module '%s' timed out — skipping", key)
+                results[key] = ""
             except Exception as exc:
                 logger.warning("Context module '%s' failed: %s", key, exc)
                 results[key] = ""

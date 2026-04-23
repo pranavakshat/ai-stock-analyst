@@ -18,14 +18,14 @@ def get_picks(market_context: str = "") -> tuple[list[dict], str]:
         return fallback_picks(MODEL_NAME, "OPENAI_API_KEY not set"), ""
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY, timeout=120.0)
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": build_user_prompt(market_context)},
             ],
-            max_tokens=1024,
+            max_tokens=2048,
             temperature=0.7,
             response_format={"type": "json_object"},
         )

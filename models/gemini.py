@@ -34,19 +34,29 @@ def get_picks(market_context: str = "") -> tuple[list[dict], str]:
         raw = None
         last_error = None
 
+        # Models that support extended thinking
+        THINKING_MODELS = {"gemini-2.5-flash", "gemini-2.5-pro"}
+
         for model in CANDIDATE_MODELS:
             try:
+                supports_thinking = model in THINKING_MODELS
+                config_kwargs = dict(
+                    system_instruction=SYSTEM_PROMPT,
+                    max_output_tokens=8000,
+                    temperature=1.0 if supports_thinking else 0.7,  # thinking requires temp=1
+                )
+                if supports_thinking:
+                    config_kwargs["thinking_config"] = types.ThinkingConfig(
+                        thinking_budget=8000
+                    )
+
                 response = client.models.generate_content(
                     model=model,
                     contents=build_user_prompt(market_context),
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
-                        max_output_tokens=4096,
-                        temperature=0.7,
-                    ),
+                    config=types.GenerateContentConfig(**config_kwargs),
                 )
                 raw = response.text
-                logger.info("Gemini using model: %s", model)
+                logger.info("Gemini using model: %s (thinking=%s)", model, supports_thinking)
                 break
             except Exception as e:
                 last_error = e
