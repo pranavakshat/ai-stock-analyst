@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = "grok"
 
 
-def get_picks() -> tuple[list[dict], str]:
+def get_picks(market_context: str = "") -> tuple[list[dict], str]:
     if not XAI_API_KEY:
         return fallback_picks(MODEL_NAME, "XAI_API_KEY not set"), ""
 
@@ -29,7 +29,7 @@ def get_picks() -> tuple[list[dict], str]:
             model="grok-3",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": build_user_prompt()},
+                {"role": "user",   "content": build_user_prompt(market_context)},
             ],
             max_tokens=1024,
             temperature=0.7,

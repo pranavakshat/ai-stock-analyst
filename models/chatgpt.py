@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = "chatgpt"
 
 
-def get_picks() -> tuple[list[dict], str]:
+def get_picks(market_context: str = "") -> tuple[list[dict], str]:
     if not OPENAI_API_KEY:
         return fallback_picks(MODEL_NAME, "OPENAI_API_KEY not set"), ""
 
@@ -23,11 +23,11 @@ def get_picks() -> tuple[list[dict], str]:
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": build_user_prompt()},
+                {"role": "user",   "content": build_user_prompt(market_context)},
             ],
             max_tokens=1024,
             temperature=0.7,
-            response_format={"type": "json_object"},   # force JSON mode
+            response_format={"type": "json_object"},
         )
         raw = response.choices[0].message.content
         picks, raw = parse_picks(raw, MODEL_NAME)

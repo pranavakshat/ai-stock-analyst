@@ -1,5 +1,6 @@
 """
-models/runner.py — Calls all 5 models concurrently and saves results to the DB.
+models/runner.py — Calls all models concurrently and saves results to the DB.
+Fetches live market context once and injects it into every model's prompt.
 """
 
 import logging
@@ -7,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 
 from database.db import save_predictions
+from market_context.fetcher import build_market_context
 from models import claude_model, chatgpt, grok, gemini
 
 logger = logging.getLogger(__name__)
@@ -22,18 +24,25 @@ ADAPTERS = {
 
 def run_all_models(today: str | None = None) -> dict[str, list[dict]]:
     """
-    Query all 5 models in parallel (max 5 threads).
-    Returns {model_name: picks_list}.
-    Also persists every result to the database.
+    Fetch live market context, then query all models in parallel.
+    Returns {model_name: picks_list} and persists everything to the DB.
     """
     if today is None:
         today = date.today().isoformat()
+
+    # Fetch market context once — shared across all model calls
+    logger.info("Fetching live market context...")
+    try:
+        market_context = build_market_context()
+    except Exception as exc:
+        logger.warning("Could not fetch market context: %s — proceeding without it.", exc)
+        market_context = ""
 
     results: dict[str, list[dict]] = {}
 
     def _call(name: str, fn):
         logger.info("Querying %s...", name)
-        picks, raw = fn()
+        picks, raw = fn(market_context)
         save_predictions(today, name, picks, raw)
         return name, picks
 

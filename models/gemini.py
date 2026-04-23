@@ -15,7 +15,7 @@ from models.base import parse_picks, fallback_picks
 logger = logging.getLogger(__name__)
 MODEL_NAME = "gemini"
 
-# Models to try in order (first one with free-tier quota wins)
+# Models to try in order (first one with quota wins)
 CANDIDATE_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.0-flash-lite",
@@ -24,7 +24,7 @@ CANDIDATE_MODELS = [
 ]
 
 
-def get_picks() -> tuple[list[dict], str]:
+def get_picks(market_context: str = "") -> tuple[list[dict], str]:
     if not GOOGLE_API_KEY:
         return fallback_picks(MODEL_NAME, "GOOGLE_API_KEY not set"), ""
 
@@ -38,7 +38,7 @@ def get_picks() -> tuple[list[dict], str]:
             try:
                 response = client.models.generate_content(
                     model=model,
-                    contents=build_user_prompt(),
+                    contents=build_user_prompt(market_context),
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_PROMPT,
                         max_output_tokens=4096,
