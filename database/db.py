@@ -158,9 +158,11 @@ def get_stock_results_by_date(date: str) -> dict[str, dict]:
 # ── Accuracy Scores ───────────────────────────────────────────────────────────
 
 def save_accuracy_score(prediction_id: int, model_name: str, date: str,
-                        ticker: str, rank: int, change_pct: float):
-    """Insert one scored prediction row."""
-    is_correct = 1 if change_pct > 0 else 0
+                        ticker: str, rank: int, change_pct: float,
+                        direction: str = "LONG"):
+    """Insert one scored prediction row. Accounts for LONG and SHORT direction."""
+    direction  = direction.upper()
+    is_correct = 1 if (change_pct > 0) == (direction == "LONG") else 0
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO accuracy_scores

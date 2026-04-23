@@ -64,6 +64,7 @@ def score_predictions(target_date: str | None = None) -> dict[str, dict]:
             ticker=ticker,
             rank=pred["rank"],
             change_pct=change_pct,
+            direction=direction,
         )
 
         if model not in summary:
@@ -88,10 +89,11 @@ def score_predictions(target_date: str | None = None) -> dict[str, dict]:
 
 def update_portfolios(target_date: str | None = None):
     """
-    Simulate $10 000 portfolio per model:
-    - Each day, split current portfolio value equally across all 5 picks.
-    - Apply that day's actual returns to each position.
-    - If no picks / no data, portfolio value stays flat.
+    Simulate $10 000 portfolio per model using conviction-weighted positions:
+    - Each pick's allocation_pct determines its share of the portfolio that day.
+    - If some tickers lack EOD data, remaining allocations are normalized to 100%.
+    - LONG positions gain when the stock goes up; SHORT positions gain when it goes down.
+    - If no picks or no EOD data, portfolio value stays flat for that day.
     """
     if target_date is None:
         target_date = date.today().isoformat()
