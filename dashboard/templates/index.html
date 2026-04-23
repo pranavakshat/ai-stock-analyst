@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Stock Analyst — Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <!-- Chart.js from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <header>
+    <div class="header-inner">
+      <div class="logo">📈 AI Stock Analyst</div>
+      <nav class="nav-tabs">
+        <button class="tab active" data-tab="today">Today's Picks</button>
+        <button class="tab" data-tab="accuracy">Accuracy</button>
+        <button class="tab" data-tab="portfolio">Portfolio</button>
+        <button class="tab" data-tab="history">History</button>
+      </nav>
+      <div class="header-actions">
+        <span id="last-updated" class="last-updated"></span>
+        <button id="btn-morning" class="btn btn-primary" title="Query all models now">
+          ▶ Run Morning Job
+        </button>
+        <button id="btn-evening" class="btn btn-secondary" title="Fetch EOD data & score">
+          🌙 Run Evening Job
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Today's Picks ── -->
+  <section id="tab-today" class="tab-content active">
+    <div class="container">
+      <div class="section-header">
+        <h2>Today's Picks</h2>
+        <div class="date-selector">
+          <label for="date-picker">Date:</label>
+          <input type="date" id="date-picker" />
+        </div>
+      </div>
+      <div id="picks-grid" class="picks-grid">
+        <div class="loading">Loading picks…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Accuracy ── -->
+  <section id="tab-accuracy" class="tab-content">
+    <div class="container">
+      <h2>Model Accuracy Leaderboard</h2>
+      <div class="accuracy-layout">
+        <!-- Leaderboard table -->
+        <div class="card full-width">
+          <h3>Overall Accuracy</h3>
+          <table id="accuracy-table" class="data-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Model</th>
+                <th>Picks Scored</th>
+                <th>Correct</th>
+                <th>Accuracy</th>
+                <th>Avg Return</th>
+              </tr>
+            </thead>
+            <tbody><tr><td colspan="6" class="loading">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <!-- Accuracy over time chart -->
+        <div class="card full-width">
+          <h3>Accuracy Over Time</h3>
+          <canvas id="accuracy-chart" height="100"></canvas>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Portfolio ── -->
+  <section id="tab-portfolio" class="tab-content">
+    <div class="container">
+      <h2>$10,000 Portfolio Simulation</h2>
+      <p class="subtitle">Each model's portfolio is rebalanced daily across its top 5 picks.</p>
+      <!-- Summary cards -->
+      <div id="portfolio-summary" class="portfolio-cards">
+        <div class="loading">Loading…</div>
+      </div>
+      <!-- Growth chart -->
+      <div class="card">
+        <h3>Portfolio Growth Over Time</h3>
+        <canvas id="portfolio-chart" height="100"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── History ── -->
+  <section id="tab-history" class="tab-content">
+    <div class="container">
+      <h2>Historical Predictions</h2>
+      <div class="history-toolbar">
+        <select id="history-model-filter">
+          <option value="">All Models</option>
+        </select>
+        <a id="export-csv-btn" href="/api/export/csv" class="btn btn-secondary" download>
+          ⬇ Export CSV
+        </a>
+      </div>
+      <div id="history-list" class="history-list">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Toast ── -->
+  <div id="toast" class="toast"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
