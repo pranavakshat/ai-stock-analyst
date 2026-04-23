@@ -174,9 +174,14 @@ def save_accuracy_score(prediction_id: int, model_name: str, date: str,
 
 
 def get_accuracy_summary() -> list[dict]:
+    """All-time per-model accuracy summary."""
+    return get_accuracy_summary_since("2000-01-01")
+
+
+def get_accuracy_summary_since(start_date: str) -> list[dict]:
     """
-    Return per-model accuracy summary:
-    total_picks, correct_picks, accuracy_pct, avg_return_pct
+    Per-model accuracy summary from start_date (ISO) to today.
+    Ordered by correct_picks DESC so the best caller is #1.
     """
     with get_conn() as conn:
         rows = conn.execute(
@@ -187,8 +192,10 @@ def get_accuracy_summary() -> list[dict]:
                  ROUND(AVG(is_correct) * 100, 2)   AS accuracy_pct,
                  ROUND(AVG(actual_change_pct), 2)  AS avg_return_pct
                FROM accuracy_scores
+               WHERE date >= ?
                GROUP BY model_name
-               ORDER BY accuracy_pct DESC"""
+               ORDER BY correct_picks DESC""",
+            (start_date,),
         ).fetchall()
     return [dict(r) for r in rows]
 

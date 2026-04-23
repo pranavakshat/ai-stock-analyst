@@ -49,7 +49,7 @@ function switchTab(tabId) {
   document.querySelectorAll(".tab-content").forEach(s =>
     s.classList.toggle("active", s.id === `tab-${tabId}`));
 
-  if (tabId === "accuracy")  loadAccuracy();
+  if (tabId === "accuracy")  loadLeaderboards(currentPeriod);
   if (tabId === "portfolio") loadPortfolio();
   if (tabId === "history")   loadHistory();
 }
@@ -125,45 +125,79 @@ async function loadPicks(dateStr) {
   }
 }
 
-// ── Accuracy ──────────────────────────────────────────────────────────────────
+// ── Leaderboards ─────────────────────────────────────────────────────────────
 
-async function loadAccuracy() {
+let currentPeriod = "all";
+
+async function loadLeaderboards(period = "all") {
+  currentPeriod = period;
+
+  // Update active pill
+  document.querySelectorAll(".period-btn").forEach(btn =>
+    btn.classList.toggle("active", btn.dataset.period === period));
+
   try {
-    const data    = await apiFetch("/api/accuracy");
-    const summary = data.accuracy || [];
+    const data = await apiFetch(`/api/leaderboard?period=${period}`);
 
-    // Build table
-    const tbody = document.querySelector("#accuracy-table tbody");
-    if (!summary.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="loading">No accuracy data yet — runs after first evening job.</td></tr>';
-      return;
+    // ── P&L table ─────────────────────────────────────────────────────────
+    const pnlTbody = document.querySelector("#pnl-table tbody");
+    const pnlRows  = data.pnl || [];
+
+    if (!pnlRows.length) {
+      pnlTbody.innerHTML = '<tr><td colspan="5" class="loading">No portfolio data yet.</td></tr>';
+    } else {
+      pnlTbody.innerHTML = pnlRows.map((row, i) => {
+        const meta    = MODELS[row.model_name] || { display: row.model_name, color: "#6b7280" };
+        const gainCls = row.period_gain >= 0 ? "positive" : "negative";
+        const retCls  = row.period_gain_pct >= 0 ? "positive" : "negative";
+        return `
+          <tr>
+            <td><strong>${i + 1}</strong></td>
+            <td><strong style="color:${meta.color}">${meta.display}</strong></td>
+            <td>${fmtMoney(row.current_value)}</td>
+            <td class="${gainCls}">${row.period_gain >= 0 ? "+" : ""}${fmtMoney(row.period_gain)}</td>
+            <td class="${retCls}">${row.period_gain_pct >= 0 ? "+" : ""}${row.period_gain_pct.toFixed(2)}%</td>
+          </tr>
+        `;
+      }).join("");
     }
 
-    tbody.innerHTML = summary.map((row, i) => {
-      const meta   = MODELS[row.model_name] || { display: row.model_name, color: "#6b7280" };
-      const retCls = row.avg_return_pct >= 0 ? "positive" : "negative";
-      return `
-        <tr>
-          <td>${i + 1}</td>
-          <td><strong style="color:${meta.color}">${meta.display}</strong></td>
-          <td>${row.total_picks}</td>
-          <td>${row.correct_picks}</td>
-          <td>
-            <div class="accuracy-bar">
-              <div class="bar-track">
-                <div class="bar-fill" style="width:${row.accuracy_pct}%;background:${meta.color}"></div>
-              </div>
-              <span class="bar-label">${row.accuracy_pct}%</span>
-            </div>
-          </td>
-          <td class="${retCls}">${fmtPct(row.avg_return_pct)}</td>
-        </tr>
-      `;
-    }).join("");
+    // ── Accuracy table ────────────────────────────────────────────────────
+    const accTbody = document.querySelector("#accuracy-table tbody");
+    const accRows  = data.accuracy || [];
 
-    // Build accuracy-over-time chart
+    if (!accRows.length) {
+      accTbody.innerHTML = '<tr><td colspan="5" class="loading">No accuracy data yet — runs after first evening job.</td></tr>';
+    } else {
+      accTbody.innerHTML = accRows.map((row, i) => {
+        const meta = MODELS[row.model_name] || { display: row.model_name, color: "#6b7280" };
+        return `
+          <tr>
+            <td><strong>${i + 1}</strong></td>
+            <td><strong style="color:${meta.color}">${meta.display}</strong></td>
+            <td><strong>${row.correct_picks}</strong></td>
+            <td>${row.total_picks}</td>
+            <td>
+              <div class="accuracy-bar">
+                <div class="bar-track">
+                  <div class="bar-fill" style="width:${row.accuracy_pct}%;background:${meta.color}"></div>
+                </div>
+                <span class="bar-label">${row.accuracy_pct}%</span>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+  } catch (err) {
+    console.error("Leaderboard load error:", err);
+  }
+
+  // ── Accuracy over time chart (always all-time) ─────────────────────────
+  try {
     const allDates  = new Set();
-    const seriesMap = {};  // model → {date → accuracy_pct}
+    const seriesMap = {};
 
     for (const [key] of Object.entries(MODELS)) {
       try {
@@ -200,7 +234,7 @@ async function loadAccuracy() {
       },
     });
   } catch (err) {
-    console.error("Accuracy load error:", err);
+    console.error("Chart load error:", err);
   }
 }
 
@@ -405,6 +439,10 @@ async function init() {
     triggerJob("/api/run/morning", "Morning Job"));
   document.getElementById("btn-evening").addEventListener("click", () =>
     triggerJob("/api/run/evening", "Evening Job"));
+
+  // Period filter buttons (leaderboard tab)
+  document.querySelectorAll(".period-btn").forEach(btn =>
+    btn.addEventListener("click", () => loadLeaderboards(btn.dataset.period)));
 
   // History filter
   document.getElementById("history-model-filter").addEventListener("change", loadHistory);

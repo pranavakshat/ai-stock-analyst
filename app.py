@@ -23,12 +23,13 @@ from datetime import date
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
-from config import APP_SECRET_KEY, DEBUG, PORT, MODELS
+from config import APP_SECRET_KEY, DEBUG, PORT, MODELS, STARTING_PORTFOLIO_VALUE
 from database.db import (
     init_db,
     get_predictions_by_date,
     get_all_prediction_dates,
     get_accuracy_summary,
+    get_accuracy_summary_since,
     get_accuracy_over_time,
     get_portfolio_history,
     get_latest_portfolio_values,
@@ -91,6 +92,60 @@ def api_predictions():
 def api_prediction_dates():
     dates = get_all_prediction_dates()
     return jsonify({"dates": dates})
+
+
+# ── Leaderboards ──────────────────────────────────────────────────────────────
+
+def _period_to_start_date(period: str) -> str:
+    """Convert a period string to an ISO start date."""
+    from datetime import timedelta
+    today = date.today()
+    days = {"1d": 0, "1w": 7, "1m": 30, "3m": 90, "1y": 365, "5y": 1825}
+    if period in days:
+        return (today - timedelta(days=days[period])).isoformat()
+    return "2000-01-01"   # "all"
+
+
+@app.route("/api/leaderboard")
+def api_leaderboard():
+    """
+    Returns P&L and accuracy leaderboards for a given period.
+    Query param: period = all | 5y | 1y | 3m | 1m | 1w | 1d
+    """
+    period     = request.args.get("period", "all").lower()
+    start_date = _period_to_start_date(period)
+
+    # ── Accuracy leaderboard ──────────────────────────────────────────────────
+    accuracy = get_accuracy_summary_since(start_date)
+
+    # ── P&L leaderboard ───────────────────────────────────────────────────────
+    pnl = []
+    for model_name in MODELS:
+        history = get_portfolio_history(model_name)   # sorted by date ASC
+
+        current_val = history[-1]["portfolio_value"] if history else STARTING_PORTFOLIO_VALUE
+
+        # Last portfolio value at or before start_date (= "opening" of the period)
+        opening_val = STARTING_PORTFOLIO_VALUE
+        for h in history:
+            if h["date"] <= start_date:
+                opening_val = h["portfolio_value"]
+
+        gain     = current_val - opening_val
+        gain_pct = (gain / opening_val * 100) if opening_val else 0.0
+
+        pnl.append({
+            "model_name":      model_name,
+            "current_value":   round(current_val, 2),
+            "opening_value":   round(opening_val, 2),
+            "period_gain":     round(gain, 2),
+            "period_gain_pct": round(gain_pct, 2),
+        })
+
+    pnl.sort(key=lambda x: x["period_gain_pct"], reverse=True)
+
+    return jsonify({"period": period, "start_date": start_date,
+                    "pnl": pnl, "accuracy": accuracy})
 
 
 # ── Accuracy ──────────────────────────────────────────────────────────────────

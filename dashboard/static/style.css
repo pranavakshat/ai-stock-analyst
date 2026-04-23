@@ -213,6 +213,37 @@ header {
   font-size: 13px;
 }
 
+/* ── Period filter ───────────────────────────────────────────────────────── */
+.period-filter {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.period-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.period-btn:hover  { border-color: var(--primary); color: var(--primary); }
+.period-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* ── Leaderboard grid ────────────────────────────────────────────────────── */
+.leaderboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+@media (max-width: 900px) {
+  .leaderboard-grid { grid-template-columns: 1fr; }
+}
+
 /* ── Accuracy ────────────────────────────────────────────────────────────── */
 .accuracy-layout { display: flex; flex-direction: column; gap: 0; }
 
