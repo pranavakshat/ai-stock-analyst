@@ -332,7 +332,7 @@ def api_run_rescore():
 def api_export_csv():
     import csv
     import io
-    from database.db import get_predictions_range, get_accuracy_summary
+    from database.db import get_predictions_range
 
     start = request.args.get("start", "2024-01-01")
     end   = request.args.get("end",   date.today().isoformat())
@@ -342,8 +342,9 @@ def api_export_csv():
     output = io.StringIO()
     writer = csv.DictWriter(
         output,
-        fieldnames=["date", "model_name", "rank", "ticker",
-                    "confidence", "reasoning", "created_at"],
+        fieldnames=["date", "model_name", "session", "rank", "ticker", "direction",
+                    "allocation_pct", "confidence", "reasoning", "auto_trade_eligible",
+                    "created_at"],
         extrasaction="ignore",
     )
     writer.writeheader()
@@ -355,6 +356,44 @@ def api_export_csv():
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment;filename=predictions_{start}_to_{end}.csv"},
     )
+
+
+# ── Soft Delete / Restore ─────────────────────────────────────────────────────
+
+@app.route("/api/predictions/<int:pred_id>", methods=["DELETE"])
+def api_delete_prediction(pred_id: int):
+    """Soft-delete a prediction by ID."""
+    from database.db import soft_delete_prediction
+    ok = soft_delete_prediction(pred_id)
+    if not ok:
+        return jsonify({"error": "Prediction not found or already deleted"}), 404
+    return jsonify({"status": "deleted", "id": pred_id})
+
+
+@app.route("/api/predictions/<int:pred_id>/restore", methods=["POST"])
+def api_restore_prediction(pred_id: int):
+    """Restore a soft-deleted prediction."""
+    from database.db import restore_prediction
+    ok = restore_prediction(pred_id)
+    if not ok:
+        return jsonify({"error": "Prediction not found or not deleted"}), 404
+    return jsonify({"status": "restored", "id": pred_id})
+
+
+@app.route("/api/predictions/deleted")
+def api_deleted_predictions():
+    """Return predictions soft-deleted in the last 10 days."""
+    from database.db import get_deleted_predictions
+    rows = get_deleted_predictions(days=10)
+    return jsonify({"deleted": rows})
+
+
+@app.route("/api/admin/purge-deleted", methods=["POST"])
+def api_purge_deleted():
+    """Hard-delete predictions soft-deleted more than 10 days ago."""
+    from database.db import purge_old_deleted
+    count = purge_old_deleted(days=10)
+    return jsonify({"status": "ok", "purged": count})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

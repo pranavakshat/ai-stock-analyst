@@ -63,6 +63,12 @@ def init_db():
         if "session" not in pred_cols:
             conn.execute("ALTER TABLE predictions ADD COLUMN session TEXT DEFAULT 'day'")
             logger.info("Migration: added session column to predictions")
+        if "auto_trade_eligible" not in pred_cols:
+            conn.execute("ALTER TABLE predictions ADD COLUMN auto_trade_eligible INTEGER DEFAULT 0")
+            logger.info("Migration: added auto_trade_eligible column to predictions")
+        if "deleted_at" not in pred_cols:
+            conn.execute("ALTER TABLE predictions ADD COLUMN deleted_at TEXT DEFAULT NULL")
+            logger.info("Migration: added deleted_at column to predictions")
         if "session" not in score_cols:
             conn.execute("ALTER TABLE accuracy_scores ADD COLUMN session TEXT DEFAULT 'day'")
             logger.info("Migration: added session column to accuracy_scores")
@@ -78,53 +84,70 @@ def save_predictions(date: str, model_name: str, picks: list[dict],
     session = "day" (market hours) | "overnight" (close → next open).
     Silently replaces if re-run for the same date+session.
     """
+    # A pick is trade-eligible if confidence is High and it's a top-3 rank.
+    # Threshold is intentionally conservative — tighten or loosen once you have real accuracy data.
+    TRADE_ELIGIBLE_CONFIDENCES = {"High"}
+    TRADE_ELIGIBLE_MAX_RANK    = 3
+
     with get_conn() as conn:
         conn.execute(
             "DELETE FROM predictions WHERE date=? AND model_name=? AND session=?",
             (date, model_name, session),
         )
         for pick in picks:
+            confidence = pick.get("confidence", "Medium")
+            rank       = pick.get("rank", 0)
+            eligible   = int(
+                confidence in TRADE_ELIGIBLE_CONFIDENCES and
+                rank <= TRADE_ELIGIBLE_MAX_RANK
+            )
             conn.execute(
                 """INSERT INTO predictions (date, model_name, session, rank, ticker, direction,
-                       allocation_pct, reasoning, confidence, raw_response)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       allocation_pct, reasoning, confidence, raw_response, auto_trade_eligible)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     date,
                     model_name,
                     session,
-                    pick.get("rank", 0),
+                    rank,
                     pick.get("ticker", "").upper(),
                     pick.get("direction", "LONG").upper(),
                     float(pick.get("allocation_pct", 20.0)),
                     pick.get("reasoning", ""),
-                    pick.get("confidence", "Medium"),
+                    confidence,
                     raw_response,
+                    eligible,
                 ),
             )
     logger.info("Saved %d %s predictions for %s on %s", len(picks), session, model_name, date)
 
 
 def get_predictions_by_date(date: str, session: str | None = None) -> list[dict]:
-    """Return all predictions for a given date, optionally filtered by session."""
+    """Return all active (non-deleted) predictions for a given date."""
     with get_conn() as conn:
         if session:
             rows = conn.execute(
-                "SELECT * FROM predictions WHERE date=? AND session=? ORDER BY model_name, rank",
+                """SELECT * FROM predictions
+                   WHERE date=? AND session=? AND deleted_at IS NULL
+                   ORDER BY model_name, rank""",
                 (date, session),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM predictions WHERE date=? ORDER BY model_name, session, rank",
+                """SELECT * FROM predictions
+                   WHERE date=? AND deleted_at IS NULL
+                   ORDER BY model_name, session, rank""",
                 (date,),
             ).fetchall()
     return [dict(r) for r in rows]
 
 
 def get_predictions_range(start: str, end: str) -> list[dict]:
-    """Return predictions between two ISO dates (inclusive)."""
+    """Return active predictions between two ISO dates (inclusive)."""
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT * FROM predictions WHERE date BETWEEN ? AND ?
+            """SELECT * FROM predictions
+               WHERE date BETWEEN ? AND ? AND deleted_at IS NULL
                ORDER BY date DESC, model_name, rank""",
             (start, end),
         ).fetchall()
@@ -132,12 +155,60 @@ def get_predictions_range(start: str, end: str) -> list[dict]:
 
 
 def get_all_prediction_dates() -> list[str]:
-    """Return distinct dates that have predictions, newest first."""
+    """Return distinct dates that have active predictions, newest first."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT date FROM predictions ORDER BY date DESC"
+            "SELECT DISTINCT date FROM predictions WHERE deleted_at IS NULL ORDER BY date DESC"
         ).fetchall()
     return [r["date"] for r in rows]
+
+
+# ── Soft Delete / Restore ─────────────────────────────────────────────────────
+
+def soft_delete_prediction(pred_id: int) -> bool:
+    """Mark a prediction as deleted. Returns True if a row was updated."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE predictions SET deleted_at=datetime('now') WHERE id=? AND deleted_at IS NULL",
+            (pred_id,),
+        )
+    return cur.rowcount > 0
+
+
+def restore_prediction(pred_id: int) -> bool:
+    """Restore a soft-deleted prediction. Returns True if a row was updated."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE predictions SET deleted_at=NULL WHERE id=? AND deleted_at IS NOT NULL",
+            (pred_id,),
+        )
+    return cur.rowcount > 0
+
+
+def get_deleted_predictions(days: int = 10) -> list[dict]:
+    """Return predictions deleted within the last `days` days, newest first."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT id, date, model_name, session, rank, ticker, direction,
+                      allocation_pct, confidence, reasoning, deleted_at
+               FROM predictions
+               WHERE deleted_at IS NOT NULL
+                 AND deleted_at >= datetime('now', ? || ' days')
+               ORDER BY deleted_at DESC""",
+            (f"-{days}",),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def purge_old_deleted(days: int = 10) -> int:
+    """Permanently delete predictions soft-deleted more than `days` ago."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM predictions WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', ? || ' days')",
+            (f"-{days}",),
+        )
+    logger.info("Purged %d expired deleted predictions", cur.rowcount)
+    return cur.rowcount
 
 
 # ── Stock Results ─────────────────────────────────────────────────────────────
@@ -293,9 +364,10 @@ def import_predictions_from_csv(csv_content: str) -> int:
             except (KeyError, ValueError, TypeError):
                 logger.warning("Skipping CSV row with invalid rank: %s", row)
                 continue
+            session_val = row.get("session", "day") or "day"
             existing = conn.execute(
-                "SELECT id FROM predictions WHERE date=? AND model_name=? AND rank=?",
-                (row["date"], row["model_name"], rank),
+                "SELECT id FROM predictions WHERE date=? AND model_name=? AND session=? AND rank=?",
+                (row["date"], row["model_name"], session_val, rank),
             ).fetchone()
             if existing:
                 continue
@@ -341,15 +413,17 @@ def backup_predictions_to_csv(backup_dir: str | None = None) -> str:
 
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT date, model_name, rank, ticker, direction, allocation_pct, "
-            "reasoning, confidence, created_at FROM predictions ORDER BY date, model_name, rank"
+            "SELECT date, model_name, session, rank, ticker, direction, allocation_pct, "
+            "reasoning, confidence, auto_trade_eligible, created_at FROM predictions "
+            "WHERE deleted_at IS NULL ORDER BY date, model_name, session, rank"
         ).fetchall()
 
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["date", "model_name", "rank", "ticker", "direction",
-                        "allocation_pct", "reasoning", "confidence", "created_at"],
+            fieldnames=["date", "model_name", "session", "rank", "ticker", "direction",
+                        "allocation_pct", "reasoning", "confidence", "auto_trade_eligible",
+                        "created_at"],
         )
         writer.writeheader()
         writer.writerows([dict(r) for r in rows])

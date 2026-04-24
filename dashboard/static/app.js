@@ -504,10 +504,13 @@ async function loadDateSessions(d, bodyEl, modelFilter) {
 
           const chips = picks.map(p => {
             const isLong = (p.direction || "LONG").toUpperCase() === "LONG";
-            return `<div class="h-chip">
+            const alloc  = p.allocation_pct != null ? Number(p.allocation_pct).toFixed(0) : "20";
+            return `<div class="h-chip" data-id="${p.id}">
               <span class="h-chip-arrow ${isLong ? "arrow-up" : "arrow-down"}">${isLong ? "▲" : "▼"}</span>
               <span class="h-chip-ticker">${p.ticker}</span>
+              <span class="h-chip-alloc">${alloc}%</span>
               <span class="badge badge-${p.confidence}">${p.confidence}</span>
+              <button class="h-chip-delete" title="Delete pick" onclick="deletePrediction(${p.id}, this)">🗑</button>
             </div>`;
           }).join("");
 
@@ -567,6 +570,65 @@ function initDarkMode() {
   });
 }
 
+// ── Soft Delete / Restore ─────────────────────────────────────────────────────
+
+async function deletePrediction(id, btnEl) {
+  if (!confirm("Delete this pick? You can restore it within 10 days.")) return;
+  try {
+    const res = await fetch(`/api/predictions/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(await res.text());
+    // Remove chip from UI
+    const chip = btnEl.closest(".h-chip");
+    if (chip) chip.remove();
+    showToast("Pick deleted — restore via Recently Deleted.");
+  } catch (err) {
+    showToast(`Error: ${err.message}`);
+  }
+}
+
+async function restorePrediction(id, rowEl) {
+  try {
+    const res = await fetch(`/api/predictions/${id}/restore`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    if (rowEl) rowEl.remove();
+    showToast("Pick restored.");
+    loadHistory();
+  } catch (err) {
+    showToast(`Error: ${err.message}`);
+  }
+}
+
+async function loadDeletedPredictions() {
+  const container = document.getElementById("deleted-list");
+  container.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const data = await apiFetch("/api/predictions/deleted");
+    const rows = data.deleted || [];
+    if (!rows.length) {
+      container.innerHTML = '<div class="loading">No recently deleted picks.</div>';
+      return;
+    }
+    container.innerHTML = rows.map(p => {
+      const meta    = MODELS[p.model_name] || { display: p.model_name, color: "#6b7280" };
+      const isLong  = (p.direction || "LONG").toUpperCase() === "LONG";
+      const alloc   = Number(p.allocation_pct || 20).toFixed(0);
+      const delDate = p.deleted_at ? p.deleted_at.slice(0, 10) : "?";
+      return `<div class="deleted-row" id="del-row-${p.id}">
+        <span class="del-model" style="color:${meta.color}">${meta.display}</span>
+        <span class="del-date">${p.date} ${p.session}</span>
+        <span class="h-chip-arrow ${isLong ? "arrow-up" : "arrow-down"}">${isLong ? "▲" : "▼"}</span>
+        <strong>${p.ticker}</strong>
+        <span class="h-chip-alloc">${alloc}%</span>
+        <span class="badge badge-${p.confidence}">${p.confidence}</span>
+        <span class="del-ts">Deleted ${delDate}</span>
+        <button class="btn btn-ghost btn-xs" onclick="restorePrediction(${p.id}, document.getElementById('del-row-${p.id}'))">↩ Restore</button>
+      </div>`;
+    }).join("");
+  } catch (err) {
+    container.innerHTML = `<div class="loading">Error: ${err.message}</div>`;
+  }
+}
+
 async function init() {
   initDarkMode();
 
@@ -618,6 +680,14 @@ async function init() {
   // History filters
   document.getElementById("history-model-filter").addEventListener("change", loadHistory);
   document.getElementById("history-apply-btn").addEventListener("click", loadHistory);
+
+  // Recently Deleted toggle
+  document.getElementById("toggle-deleted-btn").addEventListener("click", () => {
+    const panel = document.getElementById("recently-deleted-panel");
+    const open  = panel.style.display !== "none";
+    panel.style.display = open ? "none" : "block";
+    if (!open) loadDeletedPredictions();
+  });
 
   // Default date range: last 30 days
   const histEnd   = new Date();

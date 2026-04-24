@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     reasoning       TEXT,                       -- model's explanation
     confidence      TEXT,                       -- "High" / "Medium" / "Low"
     raw_response    TEXT,                       -- full raw API response (for debugging)
+    auto_trade_eligible INTEGER DEFAULT 0,      -- 1 = meets threshold for future auto-trading
+    deleted_at      TEXT    DEFAULT NULL,       -- soft-delete timestamp; NULL = active
     created_at      TEXT    DEFAULT (datetime('now'))
 );
 

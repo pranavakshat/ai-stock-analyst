@@ -243,9 +243,10 @@ def backfill_unscored_dates() -> int:
         scored = {(r[0], r[1]) for r in conn.execute(
             "SELECT DISTINCT date, session FROM accuracy_scores"
         ).fetchall()}
-        # Which (date, session) pairs exist in predictions (past dates only)
+        # Which (date, session) pairs exist in active predictions (past dates only)
         pred_pairs = [(r[0], r[1]) for r in conn.execute(
-            "SELECT DISTINCT date, session FROM predictions WHERE date < ?", (today,)
+            "SELECT DISTINCT date, session FROM predictions WHERE date < ? AND deleted_at IS NULL",
+            (today,)
         ).fetchall()]
 
     to_process = sorted((d, s) for d, s in pred_pairs if (d, s) not in scored)

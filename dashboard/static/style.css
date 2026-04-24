@@ -494,6 +494,8 @@ header {
 }
 .h-chip-arrow  { font-size: 11px; font-weight: 900; }
 .h-chip-ticker { font-weight: 800; letter-spacing: 0.04em; }
+.h-chip-alloc  { font-size: 10px; font-weight: 700; color: #6b21a8; background: #ede9fe;
+                  padding: 1px 5px; border-radius: 999px; }
 
 .history-no-session {
   padding: 10px 18px;
@@ -501,6 +503,58 @@ header {
   font-size: 13px;
   font-style: italic;
 }
+
+/* Delete button on h-chip */
+.h-chip-delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  line-height: 1;
+}
+.h-chip:hover .h-chip-delete { opacity: 0.6; }
+.h-chip-delete:hover { opacity: 1 !important; }
+
+/* Recently Deleted section */
+.recently-deleted-section {
+  margin-top: 32px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.recently-deleted-panel {
+  margin-top: 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.deleted-note {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 10px 16px 0;
+  margin: 0;
+}
+.deleted-list { padding: 8px 0 4px; }
+.deleted-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.deleted-row:last-child { border-bottom: none; }
+.del-model { font-weight: 700; min-width: 70px; }
+.del-date  { color: var(--muted); font-size: 11px; }
+.del-ts    { color: var(--muted); font-size: 11px; margin-left: auto; }
+.btn-ghost { background: none; border: 1px solid var(--border); color: var(--text);
+              padding: 3px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.btn-ghost:hover { background: var(--hover-bg); }
+.btn-xs { padding: 2px 8px !important; font-size: 11px !important; }
 
 /* ── Loading / Empty states ──────────────────────────────────────────────── */
 .loading {
