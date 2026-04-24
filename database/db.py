@@ -3,11 +3,14 @@ database/db.py — All SQLite read/write operations.
 Provides a thin wrapper around sqlite3 so no ORM is required.
 """
 
+import csv
+import io
 import os
 import sqlite3
 import logging
 from contextlib import contextmanager
 from datetime import date as date_type
+from pathlib import Path
 
 from config import DATABASE_PATH
 
@@ -257,3 +260,101 @@ def get_latest_portfolio_values() -> list[dict]:
                ORDER BY pv.portfolio_value DESC"""
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── CSV Import / Restore ──────────────────────────────────────────────────────
+
+def import_predictions_from_csv(csv_content: str) -> int:
+    """
+    Import predictions from a CSV string.
+    Skips rows that already exist (same date + model + rank).
+    Returns number of rows actually inserted.
+    """
+    reader = csv.DictReader(io.StringIO(csv_content))
+    count = 0
+    with get_conn() as conn:
+        for row in reader:
+            existing = conn.execute(
+                "SELECT id FROM predictions WHERE date=? AND model_name=? AND rank=?",
+                (row["date"], row["model_name"], int(row["rank"])),
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                """INSERT INTO predictions
+                       (date, model_name, rank, ticker, direction,
+                        allocation_pct, reasoning, confidence, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    row["date"],
+                    row["model_name"],
+                    int(row["rank"]),
+                    row["ticker"].upper(),
+                    row.get("direction", "LONG").upper(),
+                    float(row.get("allocation_pct", 20.0)),
+                    row.get("reasoning", ""),
+                    row.get("confidence", "Medium"),
+                    row.get("created_at") or None,
+                ),
+            )
+            count += 1
+    logger.info("Imported %d prediction rows from CSV", count)
+    return count
+
+
+def backup_predictions_to_csv(backup_dir: str = "backups") -> str:
+    """
+    Export all predictions to a dated CSV in backup_dir.
+    Returns the path of the file written.
+    """
+    Path(backup_dir).mkdir(parents=True, exist_ok=True)
+    today = date_type.today().isoformat()
+    path = os.path.join(backup_dir, f"predictions_{today}.csv")
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT date, model_name, rank, ticker, direction, allocation_pct, "
+            "reasoning, confidence, created_at FROM predictions ORDER BY date, model_name, rank"
+        ).fetchall()
+
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["date", "model_name", "rank", "ticker", "direction",
+                        "allocation_pct", "reasoning", "confidence", "created_at"],
+        )
+        writer.writeheader()
+        writer.writerows([dict(r) for r in rows])
+
+    logger.info("Backed up %d predictions to %s", len(rows), path)
+    return path
+
+
+def restore_from_backups(backup_dir: str = "backups") -> int:
+    """
+    On startup: if the predictions table is empty, reload from all CSV backups.
+    Returns total rows restored.
+    """
+    with get_conn() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
+    if count > 0:
+        logger.info("DB has %d predictions — skipping restore.", count)
+        return 0
+
+    total = 0
+    backup_path = Path(backup_dir)
+    if not backup_path.exists():
+        return 0
+
+    for csv_file in sorted(backup_path.glob("predictions_*.csv")):
+        try:
+            content = csv_file.read_text()
+            imported = import_predictions_from_csv(content)
+            total += imported
+            logger.info("Restored %d rows from %s", imported, csv_file.name)
+        except Exception as exc:
+            logger.error("Failed to restore from %s: %s", csv_file.name, exc)
+
+    if total:
+        logger.info("=== Restored %d total predictions from backups ===", total)
+    return total

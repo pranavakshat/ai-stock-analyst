@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 # ── Job functions ─────────────────────────────────────────────────────────────
 
 def morning_job():
-    """5 AM: Query all 5 models and send the email digest."""
+    """8 AM CT: Query all models and send the email digest."""
     from models.runner import run_all_models
     from email_service.emailer import send_daily_digest
+    from database.db import backup_predictions_to_csv
 
     today_str  = date.today().isoformat()
     today_fmt  = date.today().strftime("%A, %B %d, %Y")
@@ -34,6 +35,12 @@ def morning_job():
     try:
         all_picks = run_all_models(today_str)
         send_daily_digest(all_picks, today_fmt)
+        # Auto-backup so a Railway redeploy doesn't wipe history
+        try:
+            backup_path = backup_predictions_to_csv()
+            logger.info("Auto-backup written to %s", backup_path)
+        except Exception as bex:
+            logger.warning("Auto-backup failed (non-fatal): %s", bex)
         logger.info("=== Morning job complete ===")
     except Exception as exc:
         logger.error("Morning job failed: %s", exc, exc_info=True)

@@ -11,8 +11,9 @@ Routes:
   GET  /api/portfolio/<model>    → full portfolio history for one model
   GET  /api/models               → model metadata (names, colours)
   POST /api/run/morning          → manually trigger morning job (query + email)
-  POST /api/run/evening          → manually trigger evening job (score + portfolio)
+  POST /api/run/evening          → manually trigger evening job (score + portfolio) [?date=YYYY-MM-DD]
   GET  /api/export/csv           → download full predictions + results as CSV
+  POST /api/import/predictions   → import predictions from CSV (multipart 'file' or raw body)
   GET  /health                   → health check
 """
 
@@ -53,6 +54,12 @@ CORS(app)
 
 # Initialise DB and start scheduler when the app first boots
 init_db()
+
+# Restore predictions from backups if DB was wiped (e.g. after a Railway redeploy)
+from database.db import restore_from_backups
+restored = restore_from_backups()
+if restored:
+    logger.info("Restored %d predictions from backup CSVs on startup.", restored)
 
 from scheduler import create_scheduler
 _scheduler = create_scheduler()
@@ -200,11 +207,43 @@ def api_run_morning():
 
 @app.route("/api/run/evening", methods=["POST"])
 def api_run_evening():
-    """Manually trigger the evening job."""
+    """
+    Manually trigger the evening job.
+    Optional query param: ?date=YYYY-MM-DD  (defaults to today)
+    """
     import threading
-    from scheduler import evening_job
-    threading.Thread(target=evening_job, daemon=True).start()
-    return jsonify({"status": "evening job started in background"})
+    from accuracy.tracker import run_evening_tasks
+    target_date = request.args.get("date", date.today().isoformat())
+    threading.Thread(target=run_evening_tasks, args=(target_date,), daemon=True).start()
+    return jsonify({"status": "evening job started", "date": target_date})
+
+
+# ── CSV Import ────────────────────────────────────────────────────────────────
+
+@app.route("/api/import/predictions", methods=["POST"])
+def api_import_predictions():
+    """
+    Import predictions from a CSV file upload or raw CSV body.
+    Accepts multipart/form-data (field name: 'file') or raw text/csv body.
+    Returns count of rows inserted.
+    """
+    from database.db import import_predictions_from_csv
+    from flask import Response
+
+    try:
+        if request.files and "file" in request.files:
+            csv_content = request.files["file"].read().decode("utf-8")
+        else:
+            csv_content = request.get_data(as_text=True)
+
+        if not csv_content.strip():
+            return jsonify({"error": "No CSV content received"}), 400
+
+        count = import_predictions_from_csv(csv_content)
+        return jsonify({"status": "ok", "rows_imported": count})
+    except Exception as exc:
+        logger.error("CSV import failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
 
 
 # ── CSV Export ────────────────────────────────────────────────────────────────

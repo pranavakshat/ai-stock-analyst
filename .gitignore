@@ -2,7 +2,8 @@
 *.db
 data/
 exports/
-backups/
+# backups/ — tracked so Railway gets prediction CSVs on deploy
+# backups/
 __pycache__/
 *.pyc
 *.pyo
