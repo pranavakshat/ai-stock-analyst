@@ -328,12 +328,13 @@ def import_predictions_from_csv(csv_content: str) -> int:
 def backup_predictions_to_csv(backup_dir: str | None = None) -> str:
     """
     Export all predictions to a dated CSV in backup_dir.
-    Defaults to a 'backups' folder alongside the database file so paths are
-    absolute and survive working-directory changes on Railway.
+    Defaults to a 'backups/' folder at the project root (same level as this
+    package), which is git-tracked so backups survive Railway redeploys.
     Returns the path of the file written.
     """
     if backup_dir is None:
-        backup_dir = os.path.join(os.path.dirname(os.path.abspath(DATABASE_PATH)), "backups")
+        # __file__ = .../database/db.py  →  project root = one level up
+        backup_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backups")
     Path(backup_dir).mkdir(parents=True, exist_ok=True)
     today = date_type.today().isoformat()
     path = os.path.join(backup_dir, f"predictions_{today}.csv")
@@ -371,7 +372,7 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
         return 0
 
     if backup_dir is None:
-        backup_dir = os.path.join(os.path.dirname(os.path.abspath(DATABASE_PATH)), "backups")
+        backup_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backups")
 
     backup_path = Path(backup_dir)
     if not backup_path.exists():
