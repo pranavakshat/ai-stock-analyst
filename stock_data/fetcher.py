@@ -7,6 +7,7 @@ Called every evening at ~6 PM after markets close (4 PM ET).
 import logging
 from datetime import date, timedelta
 
+import requests
 import yfinance as yf
 
 from database.db import (
@@ -16,6 +17,19 @@ from database.db import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Custom session with a real browser User-Agent to avoid Yahoo Finance bot blocks
+# (Railway's shared IPs are often rate-limited on the default yfinance UA)
+_yf_session = requests.Session()
+_yf_session.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+})
 
 
 def fetch_eod_prices(target_date: str | None = None) -> dict[str, dict]:
@@ -40,36 +54,12 @@ def fetch_eod_prices(target_date: str | None = None) -> dict[str, dict]:
 
     results: dict[str, dict] = {}
 
-    # Batch-download all tickers in one API call to avoid rate limiting
-    try:
-        raw = yf.download(
-            tickers,
-            start=target_date,
-            end=next_day,
-            progress=False,
-            auto_adjust=True,
-            group_by="ticker",
-            threads=False,
-        )
-    except Exception as exc:
-        logger.error("Batch yfinance download failed: %s", exc)
-        return results
-
-    if raw.empty:
-        logger.warning("yfinance returned empty DataFrame for all tickers on %s", target_date)
-        return results
-
-    # Single-ticker download has a flat index; multi-ticker has a MultiIndex
-    single = len(tickers) == 1
-
     for ticker in tickers:
         try:
-            if single:
-                data = raw
-            else:
-                data = raw[ticker] if ticker in raw.columns.get_level_values(0) else None
+            t    = yf.Ticker(ticker, session=_yf_session)
+            data = t.history(start=target_date, end=next_day, auto_adjust=True)
 
-            if data is None or (hasattr(data, "empty") and data.empty):
+            if data.empty:
                 logger.warning("No data returned for %s on %s", ticker, target_date)
                 continue
 
@@ -94,7 +84,7 @@ def fetch_eod_prices(target_date: str | None = None) -> dict[str, dict]:
                         ticker, open_price, close_price, change_pct)
 
         except Exception as exc:
-            logger.error("Error processing %s from batch data: %s", ticker, exc)
+            logger.error("Error fetching %s: %s", ticker, exc)
 
     return results
 
@@ -130,7 +120,7 @@ def fetch_premarket_prices(tickers: list[str],
 
     for ticker in tickers:
         try:
-            t    = yf.Ticker(ticker)
+            t    = yf.Ticker(ticker, session=_yf_session)
             fi   = t.fast_info          # lightweight; avoids the heavy .info dict
 
             price = (
