@@ -7,7 +7,6 @@ Called every evening at ~6 PM after markets close (4 PM ET).
 import logging
 from datetime import date, timedelta
 
-import requests
 import yfinance as yf
 
 from database.db import (
@@ -17,19 +16,6 @@ from database.db import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Custom session with a real browser User-Agent to avoid Yahoo Finance bot blocks
-# (Railway's shared IPs are often rate-limited on the default yfinance UA)
-_yf_session = requests.Session()
-_yf_session.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-})
 
 
 def fetch_eod_prices(target_date: str | None = None) -> dict[str, dict]:
@@ -56,7 +42,7 @@ def fetch_eod_prices(target_date: str | None = None) -> dict[str, dict]:
 
     for ticker in tickers:
         try:
-            t    = yf.Ticker(ticker, session=_yf_session)
+            t    = yf.Ticker(ticker)
             data = t.history(start=target_date, end=next_day, auto_adjust=True)
 
             if data.empty:
@@ -120,7 +106,7 @@ def fetch_premarket_prices(tickers: list[str],
 
     for ticker in tickers:
         try:
-            t    = yf.Ticker(ticker, session=_yf_session)
+            t    = yf.Ticker(ticker)
             fi   = t.fast_info          # lightweight; avoids the heavy .info dict
 
             price = (

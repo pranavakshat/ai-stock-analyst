@@ -12,6 +12,7 @@ google-genai>=1.0.0
 
 # Stock data
 yfinance>=0.2.54
+curl_cffi>=0.7.0
 
 # Email / utilities
 python-dotenv==1.0.1
