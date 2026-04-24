@@ -41,7 +41,7 @@ def morning_job():
     from models.runner import run_all_models
     from email_service.emailer import send_daily_digest
     from accuracy.tracker import score_overnight_picks
-    from database.db import backup_predictions_to_csv
+    from database.db import backup_all_to_csv
 
     today      = date.today()
     today_str  = today.isoformat()
@@ -65,8 +65,8 @@ def morning_job():
 
         # 4. Auto-backup
         try:
-            backup_path = backup_predictions_to_csv()
-            logger.info("Auto-backup written to %s", backup_path)
+            paths = backup_all_to_csv()
+            logger.info("Auto-backup written: %s", list(paths.values()))
         except Exception as bex:
             logger.warning("Auto-backup failed (non-fatal): %s", bex)
 
@@ -89,7 +89,7 @@ def evening_job():
     from accuracy.tracker import run_evening_tasks
     from models.runner import run_all_models
     from email_service.emailer import send_daily_digest
-    from database.db import backup_predictions_to_csv
+    from database.db import backup_all_to_csv
 
     today_str = date.today().isoformat()
     today_fmt = date.today().strftime("%A, %B %d, %Y")
@@ -107,8 +107,8 @@ def evening_job():
 
         # 5. Auto-backup
         try:
-            backup_path = backup_predictions_to_csv()
-            logger.info("Auto-backup written to %s", backup_path)
+            paths = backup_all_to_csv()
+            logger.info("Auto-backup written: %s", list(paths.values()))
         except Exception as bex:
             logger.warning("Auto-backup failed (non-fatal): %s", bex)
 

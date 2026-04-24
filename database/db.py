@@ -358,38 +358,177 @@ def backup_predictions_to_csv(backup_dir: str | None = None) -> str:
     return path
 
 
+def _default_backup_dir() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backups")
+
+
+def backup_scores_to_csv(backup_dir: str | None = None) -> str:
+    """Export all accuracy_scores to a dated CSV. Called after every scoring run."""
+    if backup_dir is None:
+        backup_dir = _default_backup_dir()
+    Path(backup_dir).mkdir(parents=True, exist_ok=True)
+    today = date_type.today().isoformat()
+    path  = os.path.join(backup_dir, f"accuracy_{today}.csv")
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT prediction_id, model_name, date, session, ticker, "
+            "predicted_rank, actual_change_pct, is_correct, calculated_at "
+            "FROM accuracy_scores ORDER BY date, model_name"
+        ).fetchall()
+
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "prediction_id", "model_name", "date", "session", "ticker",
+            "predicted_rank", "actual_change_pct", "is_correct", "calculated_at",
+        ])
+        writer.writeheader()
+        writer.writerows([dict(r) for r in rows])
+
+    logger.info("Backed up %d accuracy scores to %s", len(rows), path)
+    return path
+
+
+def backup_portfolio_to_csv(backup_dir: str | None = None) -> str:
+    """Export all portfolio_values to a dated CSV. Called after every scoring run."""
+    if backup_dir is None:
+        backup_dir = _default_backup_dir()
+    Path(backup_dir).mkdir(parents=True, exist_ok=True)
+    today = date_type.today().isoformat()
+    path  = os.path.join(backup_dir, f"portfolio_{today}.csv")
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT model_name, date, portfolio_value, daily_return, "
+            "daily_return_pct, calculated_at "
+            "FROM portfolio_values ORDER BY date, model_name"
+        ).fetchall()
+
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "model_name", "date", "portfolio_value",
+            "daily_return", "daily_return_pct", "calculated_at",
+        ])
+        writer.writeheader()
+        writer.writerows([dict(r) for r in rows])
+
+    logger.info("Backed up %d portfolio rows to %s", len(rows), path)
+    return path
+
+
+def backup_all_to_csv() -> dict[str, str]:
+    """Backup predictions + accuracy scores + portfolio values. Call after every job."""
+    backup_dir = _default_backup_dir()
+    return {
+        "predictions": backup_predictions_to_csv(backup_dir),
+        "accuracy":    backup_scores_to_csv(backup_dir),
+        "portfolio":   backup_portfolio_to_csv(backup_dir),
+    }
+
+
 def restore_from_backups(backup_dir: str | None = None) -> int:
     """
-    On startup: if the predictions table is empty, reload from the latest
-    CSV backup only (latest file is always a cumulative snapshot, so loading
-    multiple files would produce duplicate-skip churn with no benefit).
-    Returns total rows restored.
+    On startup: restore predictions, accuracy scores, and portfolio values from
+    the latest backup CSVs if the tables are empty.
+    Returns total rows restored across all three tables.
     """
-    with get_conn() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
-    if count > 0:
-        logger.info("DB has %d predictions — skipping restore.", count)
-        return 0
-
     if backup_dir is None:
-        backup_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backups")
-
+        backup_dir = _default_backup_dir()
     backup_path = Path(backup_dir)
-    if not backup_path.exists():
-        return 0
+    total = 0
 
-    csv_files = sorted(backup_path.glob("predictions_*.csv"))
-    if not csv_files:
-        return 0
+    # ── Predictions ──────────────────────────────────────────────────────────
+    with get_conn() as conn:
+        pred_count = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
 
-    # Load only the most recent file — it's always the full cumulative dump
-    latest = csv_files[-1]
-    try:
-        content = latest.read_text()
-        total = import_predictions_from_csv(content)
-        if total:
-            logger.info("=== Restored %d predictions from %s ===", total, latest.name)
-        return total
-    except Exception as exc:
-        logger.error("Failed to restore from %s: %s", latest.name, exc)
-        return 0
+    if pred_count > 0:
+        logger.info("DB has %d predictions — skipping predictions restore.", pred_count)
+    else:
+        csv_files = sorted(backup_path.glob("predictions_*.csv")) if backup_path.exists() else []
+        if csv_files:
+            latest = csv_files[-1]
+            try:
+                n = import_predictions_from_csv(latest.read_text())
+                logger.info("Restored %d predictions from %s", n, latest.name)
+                total += n
+            except Exception as exc:
+                logger.error("Failed to restore predictions from %s: %s", latest.name, exc)
+
+    # ── Accuracy scores ───────────────────────────────────────────────────────
+    with get_conn() as conn:
+        score_count = conn.execute("SELECT COUNT(*) FROM accuracy_scores").fetchone()[0]
+
+    if score_count > 0:
+        logger.info("DB has %d accuracy scores — skipping restore.", score_count)
+    else:
+        csv_files = sorted(backup_path.glob("accuracy_*.csv")) if backup_path.exists() else []
+        if csv_files:
+            latest = csv_files[-1]
+            try:
+                rows = list(csv.DictReader(latest.open()))
+                with get_conn() as conn:
+                    for row in rows:
+                        try:
+                            conn.execute(
+                                """INSERT OR IGNORE INTO accuracy_scores
+                                   (prediction_id, model_name, date, session, ticker,
+                                    predicted_rank, actual_change_pct, is_correct, calculated_at)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (
+                                    int(row.get("prediction_id") or 0) or None,
+                                    row["model_name"],
+                                    row["date"],
+                                    row.get("session", "day"),
+                                    row["ticker"],
+                                    int(row.get("predicted_rank") or 0),
+                                    float(row.get("actual_change_pct") or 0),
+                                    int(row.get("is_correct") or 0),
+                                    row.get("calculated_at") or None,
+                                ),
+                            )
+                            total += 1
+                        except Exception:
+                            pass
+                logger.info("Restored %d accuracy scores from %s", len(rows), latest.name)
+            except Exception as exc:
+                logger.error("Failed to restore accuracy scores: %s", exc)
+
+    # ── Portfolio values ──────────────────────────────────────────────────────
+    with get_conn() as conn:
+        port_count = conn.execute("SELECT COUNT(*) FROM portfolio_values").fetchone()[0]
+
+    if port_count > 0:
+        logger.info("DB has %d portfolio rows — skipping restore.", port_count)
+    else:
+        csv_files = sorted(backup_path.glob("portfolio_*.csv")) if backup_path.exists() else []
+        if csv_files:
+            latest = csv_files[-1]
+            try:
+                rows = list(csv.DictReader(latest.open()))
+                with get_conn() as conn:
+                    for row in rows:
+                        try:
+                            conn.execute(
+                                """INSERT OR IGNORE INTO portfolio_values
+                                   (model_name, date, portfolio_value,
+                                    daily_return, daily_return_pct, calculated_at)
+                                   VALUES (?, ?, ?, ?, ?, ?)""",
+                                (
+                                    row["model_name"],
+                                    row["date"],
+                                    float(row["portfolio_value"]),
+                                    float(row.get("daily_return") or 0),
+                                    float(row.get("daily_return_pct") or 0),
+                                    row.get("calculated_at") or None,
+                                ),
+                            )
+                            total += 1
+                        except Exception:
+                            pass
+                logger.info("Restored %d portfolio rows from %s", len(rows), latest.name)
+            except Exception as exc:
+                logger.error("Failed to restore portfolio values: %s", exc)
+
+    if total:
+        logger.info("=== Startup restore complete: %d total rows ===", total)
+    return total
