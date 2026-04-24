@@ -121,11 +121,20 @@
   <!-- ── History ── -->
   <section id="tab-history" class="tab-content">
     <div class="container">
-      <h2>Historical Predictions</h2>
+      <div class="section-header">
+        <h2>Historical Predictions</h2>
+      </div>
       <div class="history-toolbar">
         <select id="history-model-filter">
           <option value="">All Models</option>
         </select>
+        <div class="history-date-range">
+          <label>From</label>
+          <input type="date" id="history-start-date" />
+          <label>To</label>
+          <input type="date" id="history-end-date" />
+          <button id="history-apply-btn" class="btn btn-secondary">Apply</button>
+        </div>
         <a id="export-csv-btn" href="/api/export/csv" class="btn btn-secondary" download>⬇ Export CSV</a>
       </div>
       <div id="history-list" class="history-list">

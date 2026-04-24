@@ -374,22 +374,22 @@ async function loadPortfolio() {
 // ── History ───────────────────────────────────────────────────────────────────
 
 async function loadHistory() {
-  const listEl   = document.getElementById("history-list");
-  const filterEl = document.getElementById("history-model-filter");
+  const listEl      = document.getElementById("history-list");
+  const filterEl    = document.getElementById("history-model-filter");
+  const startDate   = document.getElementById("history-start-date").value;
+  const endDate     = document.getElementById("history-end-date").value;
+  const modelFilter = filterEl.value;
 
   listEl.innerHTML = '<div class="loading">Loading…</div>';
 
   try {
-    const datesData = await apiFetch("/api/predictions/dates");
-    const dates     = datesData.dates || [];
-
-    if (!dates.length) {
+    const { dates } = await apiFetch("/api/predictions/dates");
+    if (!dates || !dates.length) {
       listEl.innerHTML = '<div class="loading">No historical data yet.</div>';
       return;
     }
 
-    // Populate model filter
-    const currentFilter = filterEl.value;
+    // Populate model filter dropdown once
     if (filterEl.options.length <= 1) {
       Object.entries(MODELS).forEach(([key, meta]) => {
         const opt = document.createElement("option");
@@ -398,61 +398,140 @@ async function loadHistory() {
       });
     }
 
-    // Fetch predictions for all dates (limit to last 30)
-    const recentDates = dates.slice(0, 30);
+    // Filter by date range
+    const filtered = dates.filter(d =>
+      (!startDate || d >= startDate) && (!endDate || d <= endDate)
+    );
+
+    if (!filtered.length) {
+      listEl.innerHTML = '<div class="loading">No entries in selected date range.</div>';
+      return;
+    }
+
+    // Update export link to match selected range
+    const exportEl = document.getElementById("export-csv-btn");
+    const expStart = startDate || filtered[filtered.length - 1];
+    const expEnd   = endDate   || filtered[0];
+    exportEl.href  = `/api/export/csv?start=${expStart}&end=${expEnd}`;
+
     listEl.innerHTML = "";
 
-    for (const d of recentDates) {
-      const data  = await apiFetch(`/api/predictions?date=${d}`);
-      const preds = data.predictions || [];
+    filtered.forEach((d, idx) => {
+      const isFirst = idx === 0;
+      const group   = document.createElement("div");
+      group.className = "history-date-group";
+      group.innerHTML = `
+        <div class="history-date-header" data-open="${isFirst}">
+          <span class="history-date-chevron">${isFirst ? "▼" : "▶"}</span>
+          <span class="history-date-label">${fmtDate(d)}</span>
+        </div>
+        <div class="history-date-body"${isFirst ? "" : ' style="display:none"'}>
+          <div class="loading" style="padding:16px 0">Loading…</div>
+        </div>`;
 
-      const filtered = filterEl.value
-        ? preds.filter(p => p.model_name === filterEl.value)
-        : preds;
+      listEl.appendChild(group);
 
-      if (!filtered.length) continue;
+      const header  = group.querySelector(".history-date-header");
+      const body    = group.querySelector(".history-date-body");
+      const chevron = group.querySelector(".history-date-chevron");
 
-      // Group by model for this date
-      const byModel = {};
-      filtered.forEach(p => {
-        if (!byModel[p.model_name]) byModel[p.model_name] = [];
-        byModel[p.model_name].push(p);
+      if (isFirst) loadDateSessions(d, body, modelFilter);
+
+      header.addEventListener("click", () => {
+        const open = header.dataset.open === "true";
+        header.dataset.open = String(!open);
+        chevron.textContent  = open ? "▶" : "▼";
+        body.style.display   = open ? "none" : "block";
+        if (!open && !body.dataset.loaded) loadDateSessions(d, body, modelFilter);
       });
+    });
 
-      Object.entries(byModel).forEach(([model, picks]) => {
-        const meta = MODELS[model] || { display: model, color: "#6b7280" };
-
-        const card = document.createElement("div");
-        card.className = "history-card";
-
-        const header = `
-          <div class="history-card-header">
-            <strong style="color:${meta.color}">${meta.display}</strong>
-            <span>${fmtDate(d)}</span>
-          </div>
-        `;
-
-        const chips = picks.sort((a, b) => a.rank - b.rank).map(p => {
-          const dir    = (p.direction || "LONG").toUpperCase();
-          const dirBg  = dir === "LONG" ? "#dcfce7" : "#fee2e2";
-          const dirFg  = dir === "LONG" ? "#166534" : "#991b1b";
-          const dirLbl = dir === "LONG" ? "▲" : "▼";
-          return `
-          <div class="pick-chip">
-            <span class="chip-ticker">#${p.rank} ${p.ticker}</span>
-            <span style="background:${dirBg};color:${dirFg};font-size:10px;
-                         font-weight:700;padding:1px 6px;border-radius:999px;">${dirLbl} ${dir}</span>
-            <span class="badge badge-${p.confidence}">${p.confidence}</span>
-          </div>
-          `;
-        }).join("");
-
-        card.innerHTML = header + `<div class="history-picks">${chips}</div>`;
-        listEl.appendChild(card);
-      });
-    }
   } catch (err) {
     listEl.innerHTML = `<div class="loading">Error: ${err.message}</div>`;
+  }
+}
+
+async function loadDateSessions(d, bodyEl, modelFilter) {
+  bodyEl.dataset.loaded = "true";
+  try {
+    const [dayData, nightData] = await Promise.all([
+      apiFetch(`/api/predictions?date=${d}&session=day`),
+      apiFetch(`/api/predictions?date=${d}&session=overnight`),
+    ]);
+
+    bodyEl.innerHTML = "";
+
+    [
+      { label: "☀️ Morning", data: dayData },
+      { label: "🌙 Evening", data: nightData },
+    ].forEach(({ label, data }) => {
+      const preds = (data.predictions || []).filter(p =>
+        !modelFilter || p.model_name === modelFilter
+      );
+
+      const section  = document.createElement("div");
+      section.className = "history-session-group";
+
+      const modelCount = new Set(preds.map(p => p.model_name)).size;
+      const countLabel = preds.length ? `${modelCount} model${modelCount !== 1 ? "s" : ""}` : "No data";
+
+      const sHeader = document.createElement("div");
+      sHeader.className = "history-session-header";
+      sHeader.innerHTML = `
+        <span class="session-chevron">▼</span>
+        <span class="session-label">${label}</span>
+        <span class="session-count">${countLabel}</span>`;
+
+      const sBody = document.createElement("div");
+      sBody.className = "history-session-body";
+
+      if (!preds.length) {
+        sBody.innerHTML = '<div class="history-no-session">No picks for this session.</div>';
+      } else {
+        const byModel = {};
+        preds.forEach(p => {
+          if (!byModel[p.model_name]) byModel[p.model_name] = [];
+          byModel[p.model_name].push(p);
+        });
+
+        Object.entries(MODELS).forEach(([mkey, meta]) => {
+          if (modelFilter && mkey !== modelFilter) return;
+          const picks = (byModel[mkey] || []).sort((a, b) => a.rank - b.rank);
+          if (!picks.length) return;
+
+          const row = document.createElement("div");
+          row.className = "history-model-row";
+
+          const chips = picks.map(p => {
+            const isLong = (p.direction || "LONG").toUpperCase() === "LONG";
+            return `<div class="h-chip">
+              <span class="h-chip-arrow ${isLong ? "arrow-up" : "arrow-down"}">${isLong ? "▲" : "▼"}</span>
+              <span class="h-chip-ticker">${p.ticker}</span>
+              <span class="badge badge-${p.confidence}">${p.confidence}</span>
+            </div>`;
+          }).join("");
+
+          row.innerHTML = `
+            <div class="h-model-label" style="color:${meta.color}">${MODEL_AVATARS[mkey] || "🤖"} ${meta.display}</div>
+            <div class="h-chips">${chips}</div>`;
+          sBody.appendChild(row);
+        });
+      }
+
+      let open = true;
+      sHeader.addEventListener("click", () => {
+        open = !open;
+        sBody.style.display = open ? "block" : "none";
+        sHeader.querySelector(".session-chevron").textContent = open ? "▼" : "▶";
+      });
+
+      section.appendChild(sHeader);
+      section.appendChild(sBody);
+      bodyEl.appendChild(section);
+    });
+
+  } catch (err) {
+    bodyEl.innerHTML = `<div class="loading">Error: ${err.message}</div>`;
   }
 }
 
@@ -536,8 +615,16 @@ async function init() {
   document.querySelectorAll(".period-btn").forEach(btn =>
     btn.addEventListener("click", () => loadLeaderboards(btn.dataset.period)));
 
-  // History filter
+  // History filters
   document.getElementById("history-model-filter").addEventListener("change", loadHistory);
+  document.getElementById("history-apply-btn").addEventListener("click", loadHistory);
+
+  // Default date range: last 30 days
+  const histEnd   = new Date();
+  const histStart = new Date();
+  histStart.setDate(histStart.getDate() - 30);
+  document.getElementById("history-end-date").value   = histEnd.toISOString().slice(0, 10);
+  document.getElementById("history-start-date").value = histStart.toISOString().slice(0, 10);
 
   // Load initial tab
   loadPicks(isoToday(), currentSession);

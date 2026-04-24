@@ -224,6 +224,51 @@ def update_portfolios(target_date: str | None = None, session: str = "day"):
                     current_value, new_value, daily_return_pct)
 
 
+# ── Backfill unscored past dates ──────────────────────────────────────────────
+
+def backfill_unscored_dates() -> int:
+    """
+    Find all past dates that have predictions but no accuracy scores and score them.
+    Handles both 'day' and 'overnight' sessions per date.
+    Called automatically by the evening job and after any CSV import.
+    Returns number of date/session combos processed.
+    """
+    from database.db import get_all_prediction_dates, get_conn
+    from stock_data.fetcher import fetch_eod_prices
+
+    today = date.today().isoformat()
+
+    # Which (date, session) pairs already have scores
+    with get_conn() as conn:
+        scored = {(r[0], r[1]) for r in conn.execute(
+            "SELECT DISTINCT date, session FROM accuracy_scores"
+        ).fetchall()}
+        # Which (date, session) pairs exist in predictions (past dates only)
+        pred_pairs = [(r[0], r[1]) for r in conn.execute(
+            "SELECT DISTINCT date, session FROM predictions WHERE date < ?", (today,)
+        ).fetchall()]
+
+    to_process = sorted((d, s) for d, s in pred_pairs if (d, s) not in scored)
+
+    if not to_process:
+        logger.info("Backfill: all past dates already scored.")
+        return 0
+
+    logger.info("Backfill: %d unscored date/session combos — %s",
+                len(to_process), to_process)
+
+    for d, s in to_process:
+        try:
+            fetch_eod_prices(d)
+            score_predictions(d, session=s)
+            update_portfolios(d, session=s)
+            logger.info("Backfilled %s/%s", d, s)
+        except Exception as exc:
+            logger.error("Backfill failed for %s/%s: %s", d, s, exc)
+
+    return len(to_process)
+
+
 # ── Convenience wrapper ───────────────────────────────────────────────────────
 
 def run_evening_tasks(target_date: str | None = None, session: str = "day"):
@@ -234,6 +279,8 @@ def run_evening_tasks(target_date: str | None = None, session: str = "day"):
         target_date = date.today().isoformat()
 
     logger.info("=== Evening tasks (%s) for %s ===", session, target_date)
+    # Catch up any past dates that were never scored (e.g. missed evening jobs)
+    backfill_unscored_dates()
     fetch_eod_prices(target_date)
     score_predictions(target_date, session=session)
     update_portfolios(target_date, session=session)

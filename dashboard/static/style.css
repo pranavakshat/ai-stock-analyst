@@ -391,51 +391,116 @@ header {
   align-items: center;
   gap: 12px;
   margin-bottom: 20px;
+  flex-wrap: wrap;
 }
 .history-toolbar select {
   padding: 7px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border);
   border-radius: 8px;
   font-size: 14px;
+  background: var(--input-bg);
+  color: var(--input-color);
 }
 
-.history-list { display: flex; flex-direction: column; gap: 16px; }
+.history-date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.history-date-range input {
+  padding: 6px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--input-bg);
+  color: var(--input-color);
+}
 
-.history-card {
+.history-list { display: flex; flex-direction: column; gap: 10px; }
+
+/* Date accordion */
+.history-date-group {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   overflow: hidden;
 }
-.history-card-header {
+.history-date-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 12px 18px;
-  background: var(--history-header-bg);
-  border-bottom: 1px solid var(--border);
-  font-size: 14px;
-}
-.history-card-header strong { font-weight: 700; }
-
-.history-picks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   padding: 14px 18px;
+  cursor: pointer;
+  background: var(--history-header-bg);
+  font-weight: 700;
+  font-size: 15px;
+  transition: background .15s;
+  user-select: none;
 }
-.pick-chip {
+.history-date-header:hover { background: var(--border); }
+.history-date-chevron { font-size: 11px; color: var(--muted); }
+
+/* Session accordion */
+.history-session-group  { border-top: 1px solid var(--border); }
+.history-session-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
+  padding: 9px 18px;
+  cursor: pointer;
+  background: var(--bg);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background .15s;
+  user-select: none;
+}
+.history-session-header:hover { background: var(--border); }
+.session-chevron { font-size: 10px; color: var(--muted); }
+.session-label   { flex: 1; }
+.session-count   { font-size: 12px; color: var(--muted); font-weight: 400; }
+
+.history-session-body { padding: 4px 0; }
+
+/* Model row */
+.history-model-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--snap-row-border);
+}
+.history-model-row:last-child { border-bottom: none; }
+
+.h-model-label {
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 155px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.h-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+.h-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: var(--chip-bg);
   border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 13px;
+  padding: 4px 10px;
+  font-size: 12px;
+  white-space: nowrap;
 }
-.pick-chip .chip-ticker { font-weight: 700; }
-.pick-chip .chip-change { font-size: 12px; }
+.h-chip-arrow  { font-size: 11px; font-weight: 900; }
+.h-chip-ticker { font-weight: 800; letter-spacing: 0.04em; }
+
+.history-no-session {
+  padding: 10px 18px;
+  color: var(--muted);
+  font-size: 13px;
+  font-style: italic;
+}
 
 /* ── Loading / Empty states ──────────────────────────────────────────────── */
 .loading {

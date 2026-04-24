@@ -276,16 +276,9 @@ def api_import_predictions():
         if dates_sessions:
             import threading
             def _rescore_all():
-                from stock_data.fetcher import fetch_eod_prices
-                from accuracy.tracker import score_predictions, update_portfolios
-                for d, s in sorted(dates_sessions):   # chronological so portfolio compounds correctly
-                    try:
-                        logger.info("Post-import rescore: %s/%s", d, s)
-                        fetch_eod_prices(d)
-                        score_predictions(d, session=s)
-                        update_portfolios(d, session=s)
-                    except Exception as exc:
-                        logger.error("Rescore failed for %s/%s: %s", d, s, exc)
+                from accuracy.tracker import backfill_unscored_dates
+                # Run full backfill — catches all unscored dates, not just those in this CSV
+                backfill_unscored_dates()
             threading.Thread(target=_rescore_all, daemon=True).start()
 
         return jsonify({
