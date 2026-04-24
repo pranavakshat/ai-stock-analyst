@@ -9,50 +9,49 @@ from google import genai
 from google.genai import types
 
 from config import GOOGLE_API_KEY
-from models.prompt import SYSTEM_PROMPT, build_user_prompt
+from models.prompt import DAY_SYSTEM_PROMPT, build_day_user_prompt
 from models.base import parse_picks, fallback_picks
 
 logger = logging.getLogger(__name__)
 MODEL_NAME = "gemini"
 
-# Models to try in order (first one with quota wins)
 CANDIDATE_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.0-flash-lite",
     "gemini-2.0-flash",
     "gemini-2.5-pro",
 ]
+THINKING_MODELS = {"gemini-2.5-flash", "gemini-2.5-pro"}
 
 
-def get_picks(market_context: str = "") -> tuple[list[dict], str]:
+def get_picks(market_context: str = "",
+              system_prompt_override: str | None = None,
+              user_prompt_builder=None) -> tuple[list[dict], str]:
     if not GOOGLE_API_KEY:
         return fallback_picks(MODEL_NAME, "GOOGLE_API_KEY not set"), ""
 
+    system  = system_prompt_override or DAY_SYSTEM_PROMPT
+    builder = user_prompt_builder or build_day_user_prompt
+
     try:
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-
-        raw = None
+        client    = genai.Client(api_key=GOOGLE_API_KEY)
+        raw       = None
         last_error = None
-
-        # Models that support extended thinking
-        THINKING_MODELS = {"gemini-2.5-flash", "gemini-2.5-pro"}
 
         for model in CANDIDATE_MODELS:
             try:
                 supports_thinking = model in THINKING_MODELS
                 config_kwargs = dict(
-                    system_instruction=SYSTEM_PROMPT,
+                    system_instruction=system,
                     max_output_tokens=8000,
-                    temperature=1.0 if supports_thinking else 0.7,  # thinking requires temp=1
+                    temperature=1.0 if supports_thinking else 0.7,
                 )
                 if supports_thinking:
-                    config_kwargs["thinking_config"] = types.ThinkingConfig(
-                        thinking_budget=8000
-                    )
+                    config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=8000)
 
                 response = client.models.generate_content(
                     model=model,
-                    contents=build_user_prompt(market_context),
+                    contents=builder(market_context),
                     config=types.GenerateContentConfig(**config_kwargs),
                 )
                 raw = response.text

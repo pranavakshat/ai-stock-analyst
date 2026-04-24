@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Stock Analyst — Dashboard</title>
   <link rel="stylesheet" href="/static/style.css" />
-  <!-- Chart.js from CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -22,12 +21,12 @@
       </nav>
       <div class="header-actions">
         <span id="last-updated" class="last-updated"></span>
-        <button id="btn-morning" class="btn btn-primary" title="Query all models now">
-          ▶ Run Morning Job
-        </button>
-        <button id="btn-evening" class="btn btn-secondary" title="Fetch EOD data & score">
-          🌙 Run Evening Job
-        </button>
+        <button id="btn-dark-mode" class="btn btn-icon" title="Toggle dark mode">🌙</button>
+        <button id="btn-morning" class="btn btn-primary">▶ Run Morning</button>
+        <div class="evening-group">
+          <input type="date" id="evening-date" class="date-input-sm" title="Date to score" />
+          <button id="btn-evening" class="btn btn-secondary">⏱ Run Evening</button>
+        </div>
       </div>
     </div>
   </header>
@@ -35,29 +34,45 @@
   <!-- ── Today's Picks ── -->
   <section id="tab-today" class="tab-content active">
     <div class="container">
+
+      <!-- Date + session selector row -->
       <div class="section-header">
-        <h2>Today's Picks</h2>
-        <div class="date-selector">
-          <label for="date-picker">Date:</label>
-          <input type="date" id="date-picker" />
+        <h2 id="picks-date-label">Today's Picks</h2>
+        <div class="picks-controls">
+          <div class="session-toggle">
+            <button class="session-btn active" data-session="day">☀️ Day</button>
+            <button class="session-btn" data-session="overnight">🌙 Overnight</button>
+          </div>
+          <div class="date-selector">
+            <label for="date-picker">Date:</label>
+            <input type="date" id="date-picker" />
+          </div>
         </div>
       </div>
+
+      <!-- Compact snapshot grid (above the fold) -->
+      <div id="snapshot-grid" class="snapshot-grid">
+        <div class="loading">Loading…</div>
+      </div>
+
+      <!-- Divider -->
+      <div class="analysis-divider"><span>Full Analysis ↓</span></div>
+
+      <!-- Detailed picks with reasoning -->
       <div id="picks-grid" class="picks-grid">
         <div class="loading">Loading picks…</div>
       </div>
+
     </div>
   </section>
 
   <!-- ── Leaderboards ── -->
   <section id="tab-accuracy" class="tab-content">
     <div class="container">
-
-      <!-- Period filter -->
       <div class="section-header">
         <h2>Leaderboards</h2>
         <div class="period-filter">
           <button class="period-btn active" data-period="all">All Time</button>
-          <button class="period-btn" data-period="5y">5Y</button>
           <button class="period-btn" data-period="1y">1Y</button>
           <button class="period-btn" data-period="3m">3M</button>
           <button class="period-btn" data-period="1m">1M</button>
@@ -65,52 +80,26 @@
           <button class="period-btn" data-period="1d">1D</button>
         </div>
       </div>
-
-      <!-- Two leaderboard tables side by side -->
       <div class="leaderboard-grid">
-
-        <!-- P&L Leaderboard -->
         <div class="card">
           <h3>💰 P&amp;L Leaderboard</h3>
           <table id="pnl-table" class="data-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Model</th>
-                <th>Portfolio Value</th>
-                <th>Period Gain</th>
-                <th>Return</th>
-              </tr>
-            </thead>
+            <thead><tr><th>#</th><th>Model</th><th>Value</th><th>Gain</th><th>Return</th></tr></thead>
             <tbody><tr><td colspan="5" class="loading">Loading…</td></tr></tbody>
           </table>
         </div>
-
-        <!-- Accuracy Leaderboard -->
         <div class="card">
           <h3>🎯 Accuracy Leaderboard</h3>
           <table id="accuracy-table" class="data-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Model</th>
-                <th>Correct</th>
-                <th>Total</th>
-                <th>Accuracy</th>
-              </tr>
-            </thead>
+            <thead><tr><th>#</th><th>Model</th><th>Correct</th><th>Total</th><th>Accuracy</th></tr></thead>
             <tbody><tr><td colspan="5" class="loading">Loading…</td></tr></tbody>
           </table>
         </div>
-
       </div>
-
-      <!-- Accuracy over time chart -->
       <div class="card">
         <h3>Accuracy Over Time</h3>
         <canvas id="accuracy-chart" height="80"></canvas>
       </div>
-
     </div>
   </section>
 
@@ -118,12 +107,10 @@
   <section id="tab-portfolio" class="tab-content">
     <div class="container">
       <h2>$10,000 Portfolio Simulation</h2>
-      <p class="subtitle">Each model's portfolio is rebalanced daily across its top 5 picks.</p>
-      <!-- Summary cards -->
+      <p class="subtitle">Each model's portfolio is rebalanced daily across its top picks.</p>
       <div id="portfolio-summary" class="portfolio-cards">
         <div class="loading">Loading…</div>
       </div>
-      <!-- Growth chart -->
       <div class="card">
         <h3>Portfolio Growth Over Time</h3>
         <canvas id="portfolio-chart" height="100"></canvas>
@@ -139,9 +126,7 @@
         <select id="history-model-filter">
           <option value="">All Models</option>
         </select>
-        <a id="export-csv-btn" href="/api/export/csv" class="btn btn-secondary" download>
-          ⬇ Export CSV
-        </a>
+        <a id="export-csv-btn" href="/api/export/csv" class="btn btn-secondary" download>⬇ Export CSV</a>
       </div>
       <div id="history-list" class="history-list">
         <div class="loading">Loading…</div>
@@ -149,9 +134,7 @@
     </div>
   </section>
 
-  <!-- ── Toast ── -->
   <div id="toast" class="toast"></div>
-
   <script src="/static/app.js"></script>
 </body>
 </html>

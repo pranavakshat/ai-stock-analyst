@@ -51,39 +51,47 @@ def init_db():
         sql = f.read()
     with get_conn() as conn:
         conn.executescript(sql)
-        # Migration: add direction column to existing databases
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(predictions)").fetchall()]
-        if "direction" not in cols:
+        # Migrations: add columns to existing databases
+        pred_cols  = [r[1] for r in conn.execute("PRAGMA table_info(predictions)").fetchall()]
+        score_cols = [r[1] for r in conn.execute("PRAGMA table_info(accuracy_scores)").fetchall()]
+        if "direction" not in pred_cols:
             conn.execute("ALTER TABLE predictions ADD COLUMN direction TEXT DEFAULT 'LONG'")
             logger.info("Migration: added direction column to predictions")
-        if "allocation_pct" not in cols:
+        if "allocation_pct" not in pred_cols:
             conn.execute("ALTER TABLE predictions ADD COLUMN allocation_pct REAL DEFAULT 20.0")
             logger.info("Migration: added allocation_pct column to predictions")
+        if "session" not in pred_cols:
+            conn.execute("ALTER TABLE predictions ADD COLUMN session TEXT DEFAULT 'day'")
+            logger.info("Migration: added session column to predictions")
+        if "session" not in score_cols:
+            conn.execute("ALTER TABLE accuracy_scores ADD COLUMN session TEXT DEFAULT 'day'")
+            logger.info("Migration: added session column to accuracy_scores")
     logger.info("Database initialised at %s", _get_db_path())
 
 
 # ── Predictions ───────────────────────────────────────────────────────────────
 
-def save_predictions(date: str, model_name: str, picks: list[dict], raw_response: str = ""):
+def save_predictions(date: str, model_name: str, picks: list[dict],
+                     raw_response: str = "", session: str = "day"):
     """
-    Insert up to 5 picks for a given model on a given date.
-    Each pick dict should have keys: ticker, reasoning, confidence, rank.
-    Silently replaces if re-run for the same date.
+    Insert up to 5 picks for a given model on a given date + session.
+    session = "day" (market hours) | "overnight" (close → next open).
+    Silently replaces if re-run for the same date+session.
     """
     with get_conn() as conn:
-        # Remove any stale predictions for this model+date before inserting fresh ones
         conn.execute(
-            "DELETE FROM predictions WHERE date=? AND model_name=?",
-            (date, model_name),
+            "DELETE FROM predictions WHERE date=? AND model_name=? AND session=?",
+            (date, model_name, session),
         )
         for pick in picks:
             conn.execute(
-                """INSERT INTO predictions (date, model_name, rank, ticker, direction,
+                """INSERT INTO predictions (date, model_name, session, rank, ticker, direction,
                        allocation_pct, reasoning, confidence, raw_response)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     date,
                     model_name,
+                    session,
                     pick.get("rank", 0),
                     pick.get("ticker", "").upper(),
                     pick.get("direction", "LONG").upper(),
@@ -93,16 +101,22 @@ def save_predictions(date: str, model_name: str, picks: list[dict], raw_response
                     raw_response,
                 ),
             )
-    logger.info("Saved %d predictions for %s on %s", len(picks), model_name, date)
+    logger.info("Saved %d %s predictions for %s on %s", len(picks), session, model_name, date)
 
 
-def get_predictions_by_date(date: str) -> list[dict]:
-    """Return all predictions for a given date, ordered by model + rank."""
+def get_predictions_by_date(date: str, session: str | None = None) -> list[dict]:
+    """Return all predictions for a given date, optionally filtered by session."""
     with get_conn() as conn:
-        rows = conn.execute(
-            """SELECT * FROM predictions WHERE date=? ORDER BY model_name, rank""",
-            (date,),
-        ).fetchall()
+        if session:
+            rows = conn.execute(
+                "SELECT * FROM predictions WHERE date=? AND session=? ORDER BY model_name, rank",
+                (date, session),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM predictions WHERE date=? ORDER BY model_name, session, rank",
+                (date,),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -162,17 +176,17 @@ def get_stock_results_by_date(date: str) -> dict[str, dict]:
 
 def save_accuracy_score(prediction_id: int, model_name: str, date: str,
                         ticker: str, rank: int, change_pct: float,
-                        direction: str = "LONG"):
-    """Insert one scored prediction row. Accounts for LONG and SHORT direction."""
+                        direction: str = "LONG", session: str = "day"):
+    """Insert one scored prediction row. Accounts for LONG/SHORT and day/overnight."""
     direction  = direction.upper()
     is_correct = 1 if (change_pct > 0) == (direction == "LONG") else 0
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO accuracy_scores
-               (prediction_id, model_name, date, ticker, predicted_rank,
+               (prediction_id, model_name, date, session, ticker, predicted_rank,
                 actual_change_pct, is_correct)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (prediction_id, model_name, date, ticker, rank, change_pct, is_correct),
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (prediction_id, model_name, date, session, ticker, rank, change_pct, is_correct),
         )
 
 
@@ -274,39 +288,52 @@ def import_predictions_from_csv(csv_content: str) -> int:
     count = 0
     with get_conn() as conn:
         for row in reader:
+            try:
+                rank = int(row["rank"])
+            except (KeyError, ValueError, TypeError):
+                logger.warning("Skipping CSV row with invalid rank: %s", row)
+                continue
             existing = conn.execute(
                 "SELECT id FROM predictions WHERE date=? AND model_name=? AND rank=?",
-                (row["date"], row["model_name"], int(row["rank"])),
+                (row["date"], row["model_name"], rank),
             ).fetchone()
             if existing:
                 continue
-            conn.execute(
-                """INSERT INTO predictions
-                       (date, model_name, rank, ticker, direction,
-                        allocation_pct, reasoning, confidence, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    row["date"],
-                    row["model_name"],
-                    int(row["rank"]),
-                    row["ticker"].upper(),
-                    row.get("direction", "LONG").upper(),
-                    float(row.get("allocation_pct", 20.0)),
-                    row.get("reasoning", ""),
-                    row.get("confidence", "Medium"),
-                    row.get("created_at") or None,
-                ),
-            )
-            count += 1
+            try:
+                conn.execute(
+                    """INSERT INTO predictions
+                           (date, model_name, session, rank, ticker, direction,
+                            allocation_pct, reasoning, confidence, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        row["date"],
+                        row["model_name"],
+                        row.get("session", "day"),
+                        rank,
+                        row["ticker"].upper(),
+                        row.get("direction", "LONG").upper(),
+                        float(row.get("allocation_pct") or 20.0),
+                        row.get("reasoning", ""),
+                        row.get("confidence", "Medium"),
+                        row.get("created_at") or None,
+                    ),
+                )
+                count += 1
+            except Exception as exc:
+                logger.warning("Skipping CSV row due to error: %s — %s", row, exc)
     logger.info("Imported %d prediction rows from CSV", count)
     return count
 
 
-def backup_predictions_to_csv(backup_dir: str = "backups") -> str:
+def backup_predictions_to_csv(backup_dir: str | None = None) -> str:
     """
     Export all predictions to a dated CSV in backup_dir.
+    Defaults to a 'backups' folder alongside the database file so paths are
+    absolute and survive working-directory changes on Railway.
     Returns the path of the file written.
     """
+    if backup_dir is None:
+        backup_dir = os.path.join(os.path.dirname(os.path.abspath(DATABASE_PATH)), "backups")
     Path(backup_dir).mkdir(parents=True, exist_ok=True)
     today = date_type.today().isoformat()
     path = os.path.join(backup_dir, f"predictions_{today}.csv")
@@ -330,9 +357,11 @@ def backup_predictions_to_csv(backup_dir: str = "backups") -> str:
     return path
 
 
-def restore_from_backups(backup_dir: str = "backups") -> int:
+def restore_from_backups(backup_dir: str | None = None) -> int:
     """
-    On startup: if the predictions table is empty, reload from all CSV backups.
+    On startup: if the predictions table is empty, reload from the latest
+    CSV backup only (latest file is always a cumulative snapshot, so loading
+    multiple files would produce duplicate-skip churn with no benefit).
     Returns total rows restored.
     """
     with get_conn() as conn:
@@ -341,20 +370,25 @@ def restore_from_backups(backup_dir: str = "backups") -> int:
         logger.info("DB has %d predictions — skipping restore.", count)
         return 0
 
-    total = 0
+    if backup_dir is None:
+        backup_dir = os.path.join(os.path.dirname(os.path.abspath(DATABASE_PATH)), "backups")
+
     backup_path = Path(backup_dir)
     if not backup_path.exists():
         return 0
 
-    for csv_file in sorted(backup_path.glob("predictions_*.csv")):
-        try:
-            content = csv_file.read_text()
-            imported = import_predictions_from_csv(content)
-            total += imported
-            logger.info("Restored %d rows from %s", imported, csv_file.name)
-        except Exception as exc:
-            logger.error("Failed to restore from %s: %s", csv_file.name, exc)
+    csv_files = sorted(backup_path.glob("predictions_*.csv"))
+    if not csv_files:
+        return 0
 
-    if total:
-        logger.info("=== Restored %d total predictions from backups ===", total)
-    return total
+    # Load only the most recent file — it's always the full cumulative dump
+    latest = csv_files[-1]
+    try:
+        content = latest.read_text()
+        total = import_predictions_from_csv(content)
+        if total:
+            logger.info("=== Restored %d predictions from %s ===", total, latest.name)
+        return total
+    except Exception as exc:
+        logger.error("Failed to restore from %s: %s", latest.name, exc)
+        return 0

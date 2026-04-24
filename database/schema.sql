@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     date            TEXT    NOT NULL,           -- ISO date, e.g. "2025-01-15"
     model_name      TEXT    NOT NULL,           -- "claude", "chatgpt", etc.
+    session         TEXT    DEFAULT 'day',      -- "day" (market hours) or "overnight" (close→next open)
     rank            INTEGER NOT NULL,           -- 1-5
     ticker          TEXT    NOT NULL,           -- e.g. "AAPL"
     direction       TEXT    DEFAULT 'LONG',     -- "LONG" or "SHORT"
@@ -37,10 +38,11 @@ CREATE TABLE IF NOT EXISTS accuracy_scores (
     prediction_id   INTEGER REFERENCES predictions(id),
     model_name      TEXT    NOT NULL,
     date            TEXT    NOT NULL,
+    session         TEXT    DEFAULT 'day',      -- "day" or "overnight"
     ticker          TEXT    NOT NULL,
     predicted_rank  INTEGER,
     actual_change_pct REAL,
-    is_correct      INTEGER,                    -- 1 if stock went up, 0 if down
+    is_correct      INTEGER,                    -- 1 = direction correct, 0 = wrong
     calculated_at   TEXT    DEFAULT (datetime('now'))
 );
 
@@ -59,6 +61,9 @@ CREATE TABLE IF NOT EXISTS portfolio_values (
 -- Indexes for fast lookups
 CREATE INDEX IF NOT EXISTS idx_predictions_date       ON predictions(date);
 CREATE INDEX IF NOT EXISTS idx_predictions_model_date ON predictions(model_name, date);
+CREATE INDEX IF NOT EXISTS idx_predictions_session    ON predictions(session);
 CREATE INDEX IF NOT EXISTS idx_stock_results_date     ON stock_results(date);
 CREATE INDEX IF NOT EXISTS idx_accuracy_model         ON accuracy_scores(model_name);
+CREATE INDEX IF NOT EXISTS idx_accuracy_date          ON accuracy_scores(date);
+CREATE INDEX IF NOT EXISTS idx_accuracy_model_date    ON accuracy_scores(model_name, date);
 CREATE INDEX IF NOT EXISTS idx_portfolio_model        ON portfolio_values(model_name);

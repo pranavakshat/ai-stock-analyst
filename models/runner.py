@@ -1,6 +1,8 @@
 """
 models/runner.py — Calls all models concurrently and saves results to the DB.
-Fetches live market context once and injects it into every model's prompt.
+
+session = "day"       → intraday picks, day market context, open→close scoring
+session = "overnight" → overnight holds, overnight context, close→next open scoring
 """
 
 import logging
@@ -8,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 
 from database.db import save_predictions
-from market_context.fetcher import build_market_context
 from models import claude_model, chatgpt, grok, gemini
 
 logger = logging.getLogger(__name__)
@@ -22,28 +23,50 @@ ADAPTERS = {
 }
 
 
-def run_all_models(today: str | None = None) -> dict[str, list[dict]]:
+def run_all_models(today: str | None = None,
+                   session: str = "day") -> dict[str, list[dict]]:
     """
-    Fetch live market context, then query all models in parallel.
-    Returns {model_name: picks_list} and persists everything to the DB.
+    Fetch live market context for the given session, query all models in parallel,
+    save results to DB, and return {model_name: picks_list}.
+
+    session = "day"       — uses day market context + intraday prompt
+    session = "overnight" — uses overnight context + overnight prompt
     """
     if today is None:
         today = date.today().isoformat()
 
-    # Fetch market context once — shared across all model calls
-    logger.info("Fetching live market context...")
+    logger.info("=== Running %s session models for %s ===", session.upper(), today)
+
+    # ── Fetch appropriate market context ──────────────────────────────────────
+    if session == "overnight":
+        from market_context.overnight import build_overnight_context
+        context_builder = build_overnight_context
+        from models.prompt import build_overnight_user_prompt as build_user_prompt
+        from models.prompt import OVERNIGHT_SYSTEM_PROMPT as system_prompt
+    else:
+        from market_context.fetcher import build_market_context
+        context_builder = build_market_context
+        from models.prompt import build_day_user_prompt as build_user_prompt
+        from models.prompt import DAY_SYSTEM_PROMPT as system_prompt
+
     try:
-        market_context = build_market_context()
+        market_context = context_builder()
     except Exception as exc:
-        logger.warning("Could not fetch market context: %s — proceeding without it.", exc)
+        logger.warning("Could not fetch %s context: %s — proceeding without it.", session, exc)
         market_context = ""
 
     results: dict[str, list[dict]] = {}
 
     def _call(name: str, fn):
-        logger.info("Querying %s...", name)
-        picks, raw = fn(market_context)
-        save_predictions(today, name, picks, raw)
+        logger.info("Querying %s (%s session)...", name, session)
+        # Append this model's track record + cross-model picks to the market context
+        from models.track_record import build_performance_context
+        perf_ctx = build_performance_context(name)
+        combined_context = market_context + perf_ctx if perf_ctx else market_context
+        picks, raw = fn(combined_context,
+                        system_prompt_override=system_prompt,
+                        user_prompt_builder=build_user_prompt)
+        save_predictions(today, name, picks, raw, session=session)
         return name, picks
 
     with ThreadPoolExecutor(max_workers=5) as pool:
@@ -53,7 +76,7 @@ def run_all_models(today: str | None = None) -> dict[str, list[dict]]:
             try:
                 name, picks = future.result()
                 results[name] = picks
-                logger.info("✓ %s returned %d picks", name, len(picks))
+                logger.info("✓ %s returned %d picks (%s)", name, len(picks), session)
             except Exception as exc:
                 logger.error("✗ %s raised: %s", model_key, exc)
                 results[model_key] = []

@@ -8,17 +8,22 @@ Get your key at: https://console.x.ai
 import logging
 from openai import OpenAI
 
-from config import XAI_API_KEY
-from models.prompt import SYSTEM_PROMPT, build_user_prompt
+from config import XAI_API_KEY, GROK_MODEL
+from models.prompt import DAY_SYSTEM_PROMPT, build_day_user_prompt
 from models.base import parse_picks, fallback_picks
 
 logger = logging.getLogger(__name__)
 MODEL_NAME = "grok"
 
 
-def get_picks(market_context: str = "") -> tuple[list[dict], str]:
+def get_picks(market_context: str = "",
+              system_prompt_override: str | None = None,
+              user_prompt_builder=None) -> tuple[list[dict], str]:
     if not XAI_API_KEY:
         return fallback_picks(MODEL_NAME, "XAI_API_KEY not set"), ""
+
+    system  = system_prompt_override or DAY_SYSTEM_PROMPT
+    builder = user_prompt_builder or build_day_user_prompt
 
     try:
         client = OpenAI(
@@ -27,10 +32,10 @@ def get_picks(market_context: str = "") -> tuple[list[dict], str]:
             timeout=120.0,
         )
         response = client.chat.completions.create(
-            model="grok-3",
+            model=GROK_MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": build_user_prompt(market_context)},
+                {"role": "system", "content": system},
+                {"role": "user",   "content": builder(market_context)},
             ],
             max_tokens=2048,
             temperature=0.7,

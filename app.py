@@ -90,9 +90,10 @@ def health():
 
 @app.route("/api/predictions")
 def api_predictions():
-    target = request.args.get("date", date.today().isoformat())
-    picks  = get_predictions_by_date(target)
-    return jsonify({"date": target, "predictions": picks})
+    target  = request.args.get("date", date.today().isoformat())
+    session = request.args.get("session")   # "day", "overnight", or None (all)
+    picks   = get_predictions_by_date(target, session=session)
+    return jsonify({"date": target, "session": session, "predictions": picks})
 
 
 @app.route("/api/predictions/dates")
@@ -208,13 +209,29 @@ def api_run_morning():
 @app.route("/api/run/evening", methods=["POST"])
 def api_run_evening():
     """
-    Manually trigger the evening job.
-    Optional query param: ?date=YYYY-MM-DD  (defaults to today)
+    Manually trigger the full evening job (score day picks + run overnight models).
+    Optional query params: ?date=YYYY-MM-DD  (defaults to today)
     """
     import threading
-    from accuracy.tracker import run_evening_tasks
+    from scheduler import evening_job as _full_evening_job
+
     target_date = request.args.get("date", date.today().isoformat())
-    threading.Thread(target=run_evening_tasks, args=(target_date,), daemon=True).start()
+
+    def _run():
+        # Override today's date for the full evening pipeline
+        import accuracy.tracker as _t
+        from stock_data.fetcher import fetch_eod_prices
+        from models.runner import run_all_models
+        from email_service.emailer import send_daily_digest
+        from datetime import datetime as _dt
+        today_fmt = _dt.fromisoformat(target_date).strftime("%A, %B %d, %Y")
+        fetch_eod_prices(target_date)
+        _t.score_predictions(target_date, session="day")
+        _t.update_portfolios(target_date, session="day")
+        overnight_picks = run_all_models(target_date, session="overnight")
+        send_daily_digest(overnight_picks, today_fmt, session="overnight")
+
+    threading.Thread(target=_run, daemon=True).start()
     return jsonify({"status": "evening job started", "date": target_date})
 
 
@@ -257,7 +274,6 @@ def api_export_csv():
     start = request.args.get("start", "2024-01-01")
     end   = request.args.get("end",   date.today().isoformat())
 
-    from database.db import get_predictions_range
     predictions = get_predictions_range(start, end)
 
     output = io.StringIO()

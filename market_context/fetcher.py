@@ -24,12 +24,16 @@ from datetime import date
 import requests
 import yfinance as yf
 
-from market_context.movers   import get_movers
-from market_context.earnings import get_earnings_context
-from market_context.news     import get_news_context
-from market_context.macro    import get_macro_indicators, get_economic_calendar
-from market_context.analyst  import get_analyst_actions
-from market_context.reddit   import get_reddit_sentiment
+from market_context.movers        import get_movers
+from market_context.earnings      import get_earnings_context
+from market_context.news          import get_news_context
+from market_context.macro         import get_macro_indicators, get_economic_calendar
+from market_context.analyst       import get_analyst_actions
+from market_context.reddit        import get_reddit_sentiment
+from market_context.technicals    import get_technicals_context
+from market_context.options       import get_options_context
+from market_context.short_interest import get_short_interest_context
+from market_context.finnhub_context import get_finnhub_context
 
 logger = logging.getLogger(__name__)
 
@@ -127,21 +131,26 @@ def build_market_context() -> str:
     today = date.today().strftime("%A, %B %d, %Y")
 
     tasks = {
-        "indices":  _build_indices_sectors,
-        "movers":   get_movers,
-        "macro":    get_macro_indicators,
-        "econ_cal": get_economic_calendar,
-        "earnings": get_earnings_context,
-        "analyst":  get_analyst_actions,
-        "news":     get_news_context,
-        "reddit":   get_reddit_sentiment,
+        "indices":       _build_indices_sectors,
+        "movers":        get_movers,
+        "macro":         get_macro_indicators,
+        "econ_cal":      get_economic_calendar,
+        "earnings":      get_earnings_context,
+        "analyst":       get_analyst_actions,
+        "news":          get_news_context,
+        "reddit":        get_reddit_sentiment,
+        # ── New high-signal modules ────────────────────────────────────────
+        "technicals":    get_technicals_context,    # RSI, MA, relative volume
+        "options":       get_options_context,        # CBOE P/C ratio + per-stock skew
+        "short":         get_short_interest_context, # Short float %, squeeze candidates
+        "finnhub":       get_finnhub_context,        # Insider trades, sentiment (needs key)
     }
 
     results: dict[str, str] = {}
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         futures = {pool.submit(fn): key for key, fn in tasks.items()}
-        for future in as_completed(futures, timeout=60):
+        for future in as_completed(futures, timeout=75):
             key = futures[future]
             try:
                 results[key] = future.result(timeout=15) or ""
@@ -155,8 +164,9 @@ def build_market_context() -> str:
     # Assemble in logical reading order
     sections = [f"=== LIVE MARKET CONTEXT: {today} ===", ""]
 
-    for key in ("indices", "movers", "macro", "econ_cal",
-                "earnings", "analyst", "news", "reddit"):
+    for key in ("indices", "movers", "macro", "econ_cal", "earnings",
+                "analyst", "technicals", "options", "short",
+                "news", "reddit", "finnhub"):
         block = results.get(key, "").strip()
         if block:
             sections.append(block)

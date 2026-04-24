@@ -3,9 +3,10 @@
 "use strict";
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let MODELS     = {};   // {key: {display, color}}
-let accuracyChart  = null;
-let portfolioChart = null;
+let MODELS          = {};   // {key: {display, color}}
+let accuracyChart   = null;
+let portfolioChart  = null;
+let currentSession  = "day"; // "day" or "overnight"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -54,18 +55,33 @@ function switchTab(tabId) {
   if (tabId === "history")   loadHistory();
 }
 
+// ── Model avatars ─────────────────────────────────────────────────────────────
+
+const MODEL_AVATARS = { claude:"🤖", chatgpt:"💬", grok:"⚡", gemini:"✨" };
+
 // ── Today's Picks ─────────────────────────────────────────────────────────────
 
-async function loadPicks(dateStr) {
-  const grid = document.getElementById("picks-grid");
-  grid.innerHTML = '<div class="loading">Loading picks…</div>';
+async function loadPicks(dateStr, session) {
+  if (session === undefined) session = currentSession;
+  const snapshotEl = document.getElementById("snapshot-grid");
+  const detailEl   = document.getElementById("picks-grid");
+  snapshotEl.innerHTML = '<div class="loading">Loading…</div>';
+  detailEl.innerHTML   = '<div class="loading">Loading picks…</div>';
+
+  // Update section header label
+  const label = document.getElementById("picks-date-label");
+  if (label) {
+    const sessionLabel = session === "overnight" ? "🌙 Overnight Holds" : "☀️ Day Session Picks";
+    label.textContent = `${sessionLabel}`;
+  }
 
   try {
-    const data = await apiFetch(`/api/predictions?date=${dateStr}`);
+    const data  = await apiFetch(`/api/predictions?date=${dateStr}&session=${session}`);
     const preds = data.predictions || [];
 
     if (!preds.length) {
-      grid.innerHTML = '<div class="loading">No picks found for this date.</div>';
+      snapshotEl.innerHTML = '<div class="loading">No picks found for this date.</div>';
+      detailEl.innerHTML   = "";
       return;
     }
 
@@ -76,52 +92,91 @@ async function loadPicks(dateStr) {
       byModel[p.model_name].push(p);
     });
 
-    grid.innerHTML = "";
+    // ── Snapshot grid ──────────────────────────────────────────────────────
+    snapshotEl.innerHTML = "";
+    Object.entries(MODELS).forEach(([key, meta]) => {
+      const picks  = (byModel[key] || []).sort((a, b) => a.rank - b.rank);
+      const avatar = MODEL_AVATARS[key] || "🤖";
+      const card   = document.createElement("div");
+      card.className = "snap-card";
+
+      const header = `
+        <div class="snap-card-header" style="background:${meta.color}">
+          <span class="snap-avatar">${avatar}</span>
+          <span class="snap-model-name">${meta.display}</span>
+        </div>`;
+
+      let rows = "";
+      if (!picks.length) {
+        rows = `<div class="snap-empty">No picks</div>`;
+      } else {
+        rows = picks.map(p => {
+          const dir   = (p.direction || "LONG").toUpperCase();
+          const isLong = dir === "LONG";
+          const conf  = p.confidence || "Medium";
+          const alloc = p.allocation_pct != null ? Number(p.allocation_pct).toFixed(0) : "20";
+          return `
+          <div class="snap-row">
+            <span class="snap-arrow ${isLong ? "arrow-up" : "arrow-down"}">${isLong ? "▲" : "▼"}</span>
+            <span class="snap-ticker">${p.ticker}</span>
+            <span class="snap-badges">
+              <span class="badge badge-${conf}">${conf}</span>
+              <span class="snap-alloc">${alloc}%</span>
+            </span>
+          </div>`;
+        }).join("");
+      }
+
+      card.innerHTML = header + `<div class="snap-body">${rows}</div>`;
+      snapshotEl.appendChild(card);
+    });
+
+    // ── Detail cards ───────────────────────────────────────────────────────
+    detailEl.innerHTML = "";
     Object.entries(MODELS).forEach(([key, meta]) => {
       const picks = (byModel[key] || []).sort((a, b) => a.rank - b.rank);
       const card  = document.createElement("div");
       card.className = "model-card";
 
-      const header = `<div class="model-card-header" style="background:${meta.color}">${meta.display}</div>`;
+      const header = `<div class="model-card-header" style="background:${meta.color}">${MODEL_AVATARS[key] || ""} ${meta.display}</div>`;
 
       let body = "";
       if (!picks.length) {
         body = `<div class="no-picks">No picks returned for this date.</div>`;
       } else {
         body = picks.map(p => {
-            const dir    = (p.direction || "LONG").toUpperCase();
-            const dirBg  = dir === "LONG" ? "#dcfce7" : "#fee2e2";
-            const dirFg  = dir === "LONG" ? "#166534" : "#991b1b";
-            const dirLbl = dir === "LONG" ? "▲ LONG" : "▼ SHORT";
-            const alloc  = p.allocation_pct != null ? Number(p.allocation_pct).toFixed(0) + "%" : "20%";
-            return `
+          const dir    = (p.direction || "LONG").toUpperCase();
+          const isLong = dir === "LONG";
+          const dirBg  = isLong ? "#dcfce7" : "#fee2e2";
+          const dirFg  = isLong ? "#166534" : "#991b1b";
+          const dirLbl = isLong ? "▲ LONG" : "▼ SHORT";
+          const alloc  = p.allocation_pct != null ? Number(p.allocation_pct).toFixed(0) + "%" : "20%";
+          return `
           <div class="pick-row">
             <div class="pick-rank" style="color:${meta.color}">#${p.rank}</div>
             <div class="pick-body">
               <div>
                 <span class="pick-ticker">${p.ticker}</span>
-                <span style="background:${dirBg};color:${dirFg};font-size:11px;
-                             font-weight:700;padding:2px 8px;border-radius:999px;
-                             display:inline-block;margin-left:4px;">${dirLbl}</span>
-                <span style="background:#ede9fe;color:#5b21b6;font-size:11px;
-                             font-weight:700;padding:2px 8px;border-radius:999px;
-                             display:inline-block;margin-left:4px;">${alloc}</span>
+                <span style="background:${dirBg};color:${dirFg};font-size:11px;font-weight:700;
+                             padding:2px 8px;border-radius:999px;display:inline-block;margin-left:4px;">${dirLbl}</span>
+                <span style="background:#ede9fe;color:#5b21b6;font-size:11px;font-weight:700;
+                             padding:2px 8px;border-radius:999px;display:inline-block;margin-left:4px;">${alloc}</span>
                 <span class="badge badge-${p.confidence}" style="margin-left:4px;">${p.confidence}</span>
               </div>
               <div class="pick-reasoning">${p.reasoning || ""}</div>
             </div>
-          </div>
-            `;
-          }).join("");
+          </div>`;
+        }).join("");
       }
 
       card.innerHTML = header + body;
-      grid.appendChild(card);
+      detailEl.appendChild(card);
     });
 
     document.getElementById("last-updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (err) {
-    grid.innerHTML = `<div class="loading">Error loading picks: ${err.message}</div>`;
+    snapshotEl.innerHTML = `<div class="loading">Error: ${err.message}</div>`;
+    detailEl.innerHTML   = "";
   }
 }
 
@@ -415,7 +470,27 @@ async function triggerJob(endpoint, label) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
+// ── Dark mode ─────────────────────────────────────────────────────────────────
+
+function initDarkMode() {
+  const btn  = document.getElementById("btn-dark-mode");
+  const body = document.body;
+  const saved = localStorage.getItem("theme");
+  if (saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
+    body.setAttribute("data-theme", "dark");
+    btn.textContent = "☀️";
+  }
+  btn.addEventListener("click", () => {
+    const isDark = body.getAttribute("data-theme") === "dark";
+    body.setAttribute("data-theme", isDark ? "light" : "dark");
+    btn.textContent = isDark ? "🌙" : "☀️";
+    localStorage.setItem("theme", isDark ? "light" : "dark");
+  });
+}
+
 async function init() {
+  initDarkMode();
+
   // Load model metadata
   try {
     const data = await apiFetch("/api/models");
@@ -424,10 +499,25 @@ async function init() {
     console.error("Could not load model metadata", err);
   }
 
+  // Session toggle buttons
+  document.querySelectorAll(".session-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      currentSession = btn.dataset.session;
+      document.querySelectorAll(".session-btn").forEach(b =>
+        b.classList.toggle("active", b.dataset.session === currentSession));
+      loadPicks(document.getElementById("date-picker").value, currentSession);
+    });
+  });
+
   // Set date picker to today
   const picker = document.getElementById("date-picker");
   picker.value = isoToday();
-  picker.addEventListener("change", () => loadPicks(picker.value));
+  picker.addEventListener("change", () => loadPicks(picker.value, currentSession));
+
+  // Set evening date picker to yesterday by default (most common use case)
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  document.getElementById("evening-date").value = yesterday.toISOString().slice(0, 10);
 
   // Tab clicks
   document.querySelectorAll(".tab").forEach(btn => {
@@ -437,8 +527,10 @@ async function init() {
   // Manual job buttons
   document.getElementById("btn-morning").addEventListener("click", () =>
     triggerJob("/api/run/morning", "Morning Job"));
-  document.getElementById("btn-evening").addEventListener("click", () =>
-    triggerJob("/api/run/evening", "Evening Job"));
+  document.getElementById("btn-evening").addEventListener("click", () => {
+    const d = document.getElementById("evening-date").value || isoToday();
+    triggerJob(`/api/run/evening?date=${d}`, `Evening Job (${d})`);
+  });
 
   // Period filter buttons (leaderboard tab)
   document.querySelectorAll(".period-btn").forEach(btn =>
@@ -448,7 +540,7 @@ async function init() {
   document.getElementById("history-model-filter").addEventListener("change", loadHistory);
 
   // Load initial tab
-  loadPicks(isoToday());
+  loadPicks(isoToday(), currentSession);
 }
 
 document.addEventListener("DOMContentLoaded", init);
