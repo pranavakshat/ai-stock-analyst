@@ -454,20 +454,23 @@ async function loadHistory() {
 async function loadDateSessions(d, bodyEl, modelFilter) {
   bodyEl.dataset.loaded = "true";
   try {
-    const [dayData, nightData] = await Promise.all([
+    const [dayData, nightData, dayScores, nightScores] = await Promise.all([
       apiFetch(`/api/predictions?date=${d}&session=day`),
       apiFetch(`/api/predictions?date=${d}&session=overnight`),
+      apiFetch(`/api/accuracy/scores?date=${d}&session=day`),
+      apiFetch(`/api/accuracy/scores?date=${d}&session=overnight`),
     ]);
 
     bodyEl.innerHTML = "";
 
     [
-      { label: "☀️ Morning", data: dayData },
-      { label: "🌙 Evening", data: nightData },
-    ].forEach(({ label, data }) => {
-      const preds = (data.predictions || []).filter(p =>
+      { label: "☀️ Morning", data: dayData,   scoresData: dayScores   },
+      { label: "🌙 Evening", data: nightData, scoresData: nightScores },
+    ].forEach(({ label, data, scoresData }) => {
+      const preds  = (data.predictions || []).filter(p =>
         !modelFilter || p.model_name === modelFilter
       );
+      const scores = scoresData.scores || {};  // {prediction_id: {is_correct, actual_change_pct}}
 
       const section  = document.createElement("div");
       section.className = "history-session-group";
@@ -503,12 +506,20 @@ async function loadDateSessions(d, bodyEl, modelFilter) {
           row.className = "history-model-row";
 
           const chips = picks.map(p => {
-            const isLong = (p.direction || "LONG").toUpperCase() === "LONG";
-            const alloc  = p.allocation_pct != null ? Number(p.allocation_pct).toFixed(0) : "20";
-            return `<div class="h-chip" data-id="${p.id}">
+            const isLong  = (p.direction || "LONG").toUpperCase() === "LONG";
+            const alloc   = p.allocation_pct != null ? Number(p.allocation_pct).toFixed(0) : "20";
+            const score   = scores[p.id];
+            const scored  = score != null;
+            const correct = scored && score.is_correct === 1;
+            const chipCls = scored ? (correct ? " h-chip-correct" : " h-chip-wrong") : "";
+            const changeLbl = scored
+              ? `<span class="h-chip-chg ${correct ? "chg-pos" : "chg-neg"}">${score.actual_change_pct >= 0 ? "+" : ""}${Number(score.actual_change_pct).toFixed(2)}%</span>`
+              : "";
+            return `<div class="h-chip${chipCls}" data-id="${p.id}">
               <span class="h-chip-arrow ${isLong ? "arrow-up" : "arrow-down"}">${isLong ? "▲" : "▼"}</span>
               <span class="h-chip-ticker">${p.ticker}</span>
               <span class="h-chip-alloc">${alloc}%</span>
+              ${changeLbl}
               <span class="badge badge-${p.confidence}">${p.confidence}</span>
               <button class="h-chip-delete" title="Delete pick" onclick="deletePrediction(${p.id}, this)">🗑</button>
             </div>`;

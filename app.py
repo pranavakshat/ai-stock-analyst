@@ -182,6 +182,23 @@ def api_accuracy_model(model_name: str):
     return jsonify({"model": model_name, "history": history})
 
 
+@app.route("/api/accuracy/scores")
+def api_accuracy_scores():
+    """Return per-pick accuracy for a specific date + session. Used to color history chips."""
+    from database.db import get_conn
+    target_date = request.args.get("date", date.today().isoformat())
+    session     = request.args.get("session", "day")
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT prediction_id, model_name, ticker, is_correct, actual_change_pct
+               FROM accuracy_scores WHERE date=? AND session=?""",
+            (target_date, session),
+        ).fetchall()
+    # Key by prediction_id for easy lookup on the frontend
+    scores = {r["prediction_id"]: dict(r) for r in rows}
+    return jsonify({"scores": scores, "date": target_date, "session": session})
+
+
 # ── Portfolio ─────────────────────────────────────────────────────────────────
 
 @app.route("/api/portfolio")

@@ -497,6 +497,20 @@ header {
 .h-chip-alloc  { font-size: 10px; font-weight: 700; color: #6b21a8; background: #ede9fe;
                   padding: 1px 5px; border-radius: 999px; }
 
+/* Scored chip states */
+.h-chip-correct { background: #dcfce7; border-color: #16a34a; }
+.h-chip-wrong   { background: #fee2e2; border-color: #dc2626; }
+[data-theme="dark"] .h-chip-correct { background: #14532d; border-color: #16a34a; }
+[data-theme="dark"] .h-chip-wrong   { background: #7f1d1d; border-color: #dc2626; }
+
+/* Actual change % label */
+.h-chip-chg  { font-size: 10px; font-weight: 700; padding: 1px 5px;
+                border-radius: 999px; }
+.chg-pos     { color: #15803d; background: #bbf7d0; }
+.chg-neg     { color: #b91c1c; background: #fecaca; }
+[data-theme="dark"] .chg-pos { color: #4ade80; background: #166534; }
+[data-theme="dark"] .chg-neg { color: #f87171; background: #7f1d1d; }
+
 .history-no-session {
   padding: 10px 18px;
   color: var(--muted);
