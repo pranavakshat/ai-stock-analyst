@@ -39,20 +39,41 @@ def fetch_eod_prices(target_date: str | None = None) -> dict[str, dict]:
     next_day = (date.fromisoformat(target_date) + timedelta(days=1)).isoformat()
 
     results: dict[str, dict] = {}
+
+    # Batch-download all tickers in one API call to avoid rate limiting
+    try:
+        raw = yf.download(
+            tickers,
+            start=target_date,
+            end=next_day,
+            progress=False,
+            auto_adjust=True,
+            group_by="ticker",
+            threads=False,
+        )
+    except Exception as exc:
+        logger.error("Batch yfinance download failed: %s", exc)
+        return results
+
+    if raw.empty:
+        logger.warning("yfinance returned empty DataFrame for all tickers on %s", target_date)
+        return results
+
+    # Single-ticker download has a flat index; multi-ticker has a MultiIndex
+    single = len(tickers) == 1
+
     for ticker in tickers:
         try:
-            data = yf.download(
-                ticker,
-                start=target_date,
-                end=next_day,
-                progress=False,
-                auto_adjust=True,
-            )
-            if data.empty:
+            if single:
+                data = raw
+            else:
+                data = raw[ticker] if ticker in raw.columns.get_level_values(0) else None
+
+            if data is None or (hasattr(data, "empty") and data.empty):
                 logger.warning("No data returned for %s on %s", ticker, target_date)
                 continue
 
-            row = data.iloc[0]
+            row         = data.iloc[0]
             open_price  = float(row["Open"])
             close_price = float(row["Close"])
             volume      = int(row.get("Volume", 0))
@@ -73,7 +94,7 @@ def fetch_eod_prices(target_date: str | None = None) -> dict[str, dict]:
                         ticker, open_price, close_price, change_pct)
 
         except Exception as exc:
-            logger.error("Error fetching %s: %s", ticker, exc)
+            logger.error("Error processing %s from batch data: %s", ticker, exc)
 
     return results
 

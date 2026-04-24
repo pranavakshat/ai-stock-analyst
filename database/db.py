@@ -365,31 +365,40 @@ def import_predictions_from_csv(csv_content: str) -> int:
                 logger.warning("Skipping CSV row with invalid rank: %s", row)
                 continue
             session_val = row.get("session", "day") or "day"
+            ticker_val  = row["ticker"].upper()
+            direction_val = row.get("direction", "LONG").upper()
+            alloc_val   = float(row.get("allocation_pct") or 20.0)
+            conf_val    = row.get("confidence", "Medium")
+            reason_val  = row.get("reasoning", "")
+            created_val = row.get("created_at") or None
+            auto_val    = int(row.get("auto_trade_eligible") or 0)
+
             existing = conn.execute(
                 "SELECT id FROM predictions WHERE date=? AND model_name=? AND session=? AND rank=?",
                 (row["date"], row["model_name"], session_val, rank),
             ).fetchone()
-            if existing:
-                continue
+
             try:
-                conn.execute(
-                    """INSERT INTO predictions
-                           (date, model_name, session, rank, ticker, direction,
-                            allocation_pct, reasoning, confidence, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        row["date"],
-                        row["model_name"],
-                        row.get("session", "day"),
-                        rank,
-                        row["ticker"].upper(),
-                        row.get("direction", "LONG").upper(),
-                        float(row.get("allocation_pct") or 20.0),
-                        row.get("reasoning", ""),
-                        row.get("confidence", "Medium"),
-                        row.get("created_at") or None,
-                    ),
-                )
+                if existing:
+                    # Update fields that may have been missing in older CSVs
+                    conn.execute(
+                        """UPDATE predictions SET
+                               ticker=?, direction=?, allocation_pct=?, confidence=?,
+                               reasoning=?, auto_trade_eligible=?, session=?
+                           WHERE id=?""",
+                        (ticker_val, direction_val, alloc_val, conf_val,
+                         reason_val, auto_val, session_val, existing["id"]),
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO predictions
+                               (date, model_name, session, rank, ticker, direction,
+                                allocation_pct, reasoning, confidence, auto_trade_eligible, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (row["date"], row["model_name"], session_val, rank,
+                         ticker_val, direction_val, alloc_val, reason_val,
+                         conf_val, auto_val, created_val),
+                    )
                 count += 1
             except Exception as exc:
                 logger.warning("Skipping CSV row due to error: %s — %s", row, exc)
