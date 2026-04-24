@@ -240,12 +240,17 @@ def api_run_evening():
 @app.route("/api/import/predictions", methods=["POST"])
 def api_import_predictions():
     """
-    Import predictions from a CSV file upload or raw CSV body.
+    Import predictions from a CSV file upload or raw CSV body, then automatically
+    fetch EOD prices + score + update portfolios for every date in the file.
+
     Accepts multipart/form-data (field name: 'file') or raw text/csv body.
-    Returns count of rows inserted.
+    Query param: ?rescore=false to skip rescoring (default: true).
     """
     from database.db import import_predictions_from_csv
-    from flask import Response
+    import csv as _csv
+    import io as _io
+
+    rescore = request.args.get("rescore", "true").lower() != "false"
 
     try:
         if request.files and "file" in request.files:
@@ -257,10 +262,75 @@ def api_import_predictions():
             return jsonify({"error": "No CSV content received"}), 400
 
         count = import_predictions_from_csv(csv_content)
-        return jsonify({"status": "ok", "rows_imported": count})
+
+        # Extract unique (date, session) pairs for rescoring
+        dates_sessions: set[tuple[str, str]] = set()
+        if rescore and count > 0:
+            reader = _csv.DictReader(_io.StringIO(csv_content))
+            for row in reader:
+                d = row.get("date", "").strip()
+                s = row.get("session", "day").strip() or "day"
+                if d:
+                    dates_sessions.add((d, s))
+
+        if dates_sessions:
+            import threading
+            def _rescore_all():
+                from stock_data.fetcher import fetch_eod_prices
+                from accuracy.tracker import score_predictions, update_portfolios
+                for d, s in sorted(dates_sessions):   # chronological so portfolio compounds correctly
+                    try:
+                        logger.info("Post-import rescore: %s/%s", d, s)
+                        fetch_eod_prices(d)
+                        score_predictions(d, session=s)
+                        update_portfolios(d, session=s)
+                    except Exception as exc:
+                        logger.error("Rescore failed for %s/%s: %s", d, s, exc)
+            threading.Thread(target=_rescore_all, daemon=True).start()
+
+        return jsonify({
+            "status":        "ok",
+            "rows_imported": count,
+            "rescoring":     bool(dates_sessions),
+            "dates":         sorted({d for d, _ in dates_sessions}),
+        })
     except Exception as exc:
         logger.error("CSV import failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/run/rescore", methods=["POST"])
+def api_run_rescore():
+    """
+    Re-fetch EOD prices + rescore + update portfolios for a date range.
+    Query params: ?start=YYYY-MM-DD&end=YYYY-MM-DD&session=day
+    """
+    import threading
+    from datetime import timedelta
+
+    start   = request.args.get("start", date.today().isoformat())
+    end     = request.args.get("end", start)
+    session = request.args.get("session", "day")
+
+    d_cur, d_end = date.fromisoformat(start), date.fromisoformat(end)
+    dates = []
+    while d_cur <= d_end:
+        dates.append(d_cur.isoformat())
+        d_cur += timedelta(days=1)
+
+    def _run():
+        from stock_data.fetcher import fetch_eod_prices
+        from accuracy.tracker import score_predictions, update_portfolios
+        for d in dates:
+            try:
+                fetch_eod_prices(d)
+                score_predictions(d, session=session)
+                update_portfolios(d, session=session)
+            except Exception as exc:
+                logger.error("Rescore failed for %s: %s", d, exc)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"status": "rescore started", "dates": dates, "session": session})
 
 
 # ── CSV Export ────────────────────────────────────────────────────────────────
