@@ -60,6 +60,16 @@ from database.db import restore_from_backups
 restored = restore_from_backups()
 if restored:
     logger.info("Restored %d predictions from backup CSVs on startup.", restored)
+    # Kick off scoring in background so the web server doesn't block on startup
+    import threading
+    def _startup_backfill():
+        try:
+            from accuracy.tracker import backfill_unscored_dates
+            n = backfill_unscored_dates()
+            logger.info("Startup backfill complete: %d date/session combos scored.", n)
+        except Exception as exc:
+            logger.error("Startup backfill failed: %s", exc, exc_info=True)
+    threading.Thread(target=_startup_backfill, daemon=True).start()
 
 from scheduler import create_scheduler
 _scheduler = create_scheduler()
