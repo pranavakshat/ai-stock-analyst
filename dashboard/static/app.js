@@ -255,10 +255,11 @@ async function loadLeaderboards(period = "all") {
     console.error("Leaderboard load error:", err);
   }
 
-  // ── Accuracy over time chart (always all-time) ─────────────────────────
+  // ── Accuracy over time chart (bar + avg line, toggle cumulative/rolling) ──
   try {
     const allDates  = new Set();
-    const seriesMap = {};
+    const seriesMap = {};   // key → { label → accuracy_pct }
+    const rawOrder  = [];   // chronological labels (excluding Start)
 
     for (const [key] of Object.entries(MODELS)) {
       try {
@@ -272,31 +273,92 @@ async function loadLeaderboards(period = "all") {
       } catch (_) {}
     }
 
-    const START_LABEL = "Start";
-    allDates.add(START_LABEL);
-    const labels = [START_LABEL, ...Array.from(allDates).filter(l => l !== START_LABEL).sort()];
-    const datasets = Object.entries(MODELS).map(([key, meta]) => ({
-      label:           meta.display,
-      data:            labels.map(l => l === START_LABEL ? 0 : (seriesMap[key]?.[l] ?? null)),
-      borderColor:     meta.color,
-      backgroundColor: meta.color + "22",
-      tension:         0.3,
-      spanGaps:        true,
-    }));
+    const sortedLabels = Array.from(allDates).sort();
+    sortedLabels.forEach(l => { if (!rawOrder.includes(l)) rawOrder.push(l); });
+
+    // Avg line helpers
+    function cumulativeAvg(key) {
+      let correct = 0, total = 0;
+      return rawOrder.map(lbl => {
+        const pct = seriesMap[key]?.[lbl];
+        if (pct == null) return null;
+        correct += pct / 100 * 5;
+        total   += 5;
+        return Math.round(correct / total * 100);
+      });
+    }
+    function rollingAvg(key, n = 5) {
+      const vals = rawOrder.map(lbl => seriesMap[key]?.[lbl] ?? null);
+      return vals.map((_, i) => {
+        const slice = vals.slice(Math.max(0, i - n + 1), i + 1).filter(v => v != null);
+        if (!slice.length) return null;
+        return Math.round(slice.reduce((a, b) => a + b, 0) / slice.length);
+      });
+    }
+
+    // Build datasets: bar (daily) + line (avg) per model
+    function buildDatasets(mode) {
+      const out = [];
+      Object.entries(MODELS).forEach(([key, meta]) => {
+        // bar — daily session accuracy
+        out.push({
+          type:            "bar",
+          label:           meta.display,
+          data:            rawOrder.map(lbl => seriesMap[key]?.[lbl] ?? null),
+          backgroundColor: meta.color + "55",
+          borderColor:     meta.color,
+          borderWidth:     1,
+          borderRadius:    3,
+          order:           2,
+          spanGaps:        false,
+        });
+        // line — avg
+        out.push({
+          type:            "line",
+          label:           meta.display + " avg",
+          data:            mode === "cumulative" ? cumulativeAvg(key) : rollingAvg(key),
+          borderColor:     meta.color,
+          backgroundColor: "transparent",
+          borderWidth:     2.5,
+          borderDash:      [5, 3],
+          pointRadius:     3,
+          tension:         0.3,
+          spanGaps:        true,
+          order:           1,
+        });
+      });
+      return out;
+    }
 
     const ctx = document.getElementById("accuracy-chart").getContext("2d");
     if (accuracyChart) accuracyChart.destroy();
     accuracyChart = new Chart(ctx, {
-      type: "line",
-      data: { labels, datasets },
+      data: { labels: rawOrder, datasets: buildDatasets("cumulative") },
       options: {
         responsive: true,
-        plugins: { legend: { position: "top" } },
+        plugins: {
+          legend: {
+            labels: {
+              filter: item => !item.label.endsWith(" avg"),
+              usePointStyle: true,
+            },
+          },
+          tooltip: {
+            callbacks: {
+              label: ctx => ctx.dataset.label + ": " + (ctx.parsed.y != null ? ctx.parsed.y + "%" : "—"),
+            },
+          },
+        },
         scales: {
-          y: { title: { display: true, text: "Daily Accuracy %" }, min: 0, max: 100 },
+          y: { title: { display: true, text: "Accuracy %" }, min: 0, max: 100 },
+          x: { ticks: { maxRotation: 35, autoSkip: false } },
         },
       },
     });
+
+    // Expose toggle function globally
+    window._accuracyRawLabels   = rawOrder;
+    window._accuracyBuildDatasets = buildDatasets;
   } catch (err) {
     console.error("Chart load error:", err);
   }
@@ -595,6 +657,16 @@ function initDarkMode() {
 }
 
 
+
+// ── Accuracy chart avg-mode toggle ───────────────────────────────────────────
+
+function setAvgMode(mode) {
+  document.getElementById("avg-cumulative").classList.toggle("active", mode === "cumulative");
+  document.getElementById("avg-rolling").classList.toggle("active", mode === "rolling");
+  if (!accuracyChart || !window._accuracyBuildDatasets) return;
+  accuracyChart.data.datasets = window._accuracyBuildDatasets(mode);
+  accuracyChart.update();
+}
 
 async function init() {
   initDarkMode();

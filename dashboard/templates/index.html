@@ -97,8 +97,14 @@
         </div>
       </div>
       <div class="card">
-        <h3>Accuracy Over Time</h3>
-        <canvas id="accuracy-chart" height="80"></canvas>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <h3 style="margin:0;">Accuracy Over Time</h3>
+          <div style="display:flex;gap:6px;">
+            <button class="avg-toggle-btn active" id="avg-cumulative" onclick="setAvgMode('cumulative')">Cumulative avg</button>
+            <button class="avg-toggle-btn" id="avg-rolling" onclick="setAvgMode('rolling')">Rolling avg</button>
+          </div>
+        </div>
+        <canvas id="accuracy-chart" height="80" role="img" aria-label="Accuracy over time chart with bar and line overlay"></canvas>
       </div>
     </div>
   </section>

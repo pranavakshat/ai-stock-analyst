@@ -301,6 +301,20 @@ header {
 .period-btn:hover  { border-color: var(--primary); color: var(--primary); }
 .period-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
 
+.avg-toggle-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.avg-toggle-btn:hover  { border-color: var(--primary); color: var(--primary); }
+.avg-toggle-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
 /* ── Leaderboard grid ────────────────────────────────────────────────────── */
 .leaderboard-grid {
   display: grid;
