@@ -62,6 +62,6 @@ TRADE_FEE_PCT = float(os.getenv("TRADE_FEE_PCT", 0.0003))
 MODELS = {
     "claude":   {"display": "Claude (Anthropic)",  "color": "#d97706"},   # amber
     "chatgpt":  {"display": "ChatGPT (OpenAI)",    "color": "#ef4444"},   # red
-    "grok":     {"display": "Grok (xAI)",          "color": "#374151"},   # dark charcoal (black-readable on both light/dark)
+    "grok":     {"display": "Grok (xAI)",          "color": "#a78bfa"},   # purple
     "gemini":   {"display": "Gemini (Google)",     "color": "#4285f4"},   # Google blue
 }
