@@ -29,7 +29,7 @@ function fmtDate(iso) {
 function sessionLabel(date, session) {
   const d = new Date(date + "T12:00:00");
   const base = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return base + (session === "day" ? " AM" : " PM");
+  return base + (session === "day" ? " M" : " O");
 }
 
 function fmtMoney(v) {

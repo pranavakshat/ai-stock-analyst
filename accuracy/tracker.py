@@ -8,7 +8,7 @@ Two session types:
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from config import MODELS, STARTING_PORTFOLIO_VALUE, TRADE_FEE_PCT
 from database.db import (
@@ -225,6 +225,99 @@ def update_portfolios(target_date: str | None = None, session: str = "day"):
                     current_value, new_value, daily_return_pct)
 
 
+# ── Next trading date helper ──────────────────────────────────────────────────
+
+def _next_trading_date(d: str) -> str:
+    """Return the next weekday after date string d (skips weekends, not holidays)."""
+    dt = date.fromisoformat(d) + timedelta(days=1)
+    while dt.weekday() >= 5:   # 5=Sat, 6=Sun
+        dt += timedelta(days=1)
+    return dt.isoformat()
+
+
+# ── Overnight portfolio simulation ────────────────────────────────────────────
+
+def update_overnight_portfolios(pick_date: str, next_open_date: str):
+    """
+    Simulate portfolio for overnight picks made on pick_date.
+    Entry = close price of pick_date.
+    Exit  = open price of next_open_date.
+    Starting balance chains from the latest portfolio value per model
+    (typically the day-session value of pick_date, so overnight stacks on top).
+    Saved with session='overnight' so it's a distinct data point on the chart.
+    """
+    predictions = get_predictions_by_date(pick_date, session="overnight")
+    if not predictions:
+        logger.info("No overnight predictions for %s — skipping overnight portfolio.", pick_date)
+        return
+
+    prev_results = get_stock_results_by_date(pick_date)       # close prices
+    next_results = get_stock_results_by_date(next_open_date)   # open prices
+
+    if not prev_results:
+        logger.warning("No price data for %s — cannot compute overnight portfolio.", pick_date)
+        return
+    if not next_results:
+        logger.warning("No price data for %s — cannot compute overnight portfolio exit.", next_open_date)
+        return
+
+    # Start each model from its most recent portfolio value (chains correctly)
+    latest = {row["model_name"]: row["portfolio_value"]
+              for row in get_latest_portfolio_values()}
+
+    for model_name in MODELS:
+        current_value = latest.get(model_name, STARTING_PORTFOLIO_VALUE)
+        model_picks   = [p for p in predictions if p["model_name"] == model_name]
+
+        if not model_picks:
+            save_portfolio_value(model_name, pick_date, current_value, 0.0, 0.0,
+                                 session="overnight")
+            continue
+
+        # Build list of picks we have full close→open data for
+        available = []
+        for p in model_picks:
+            ticker  = p["ticker"]
+            prev    = prev_results.get(ticker)
+            nxt     = next_results.get(ticker)
+            if not prev or not nxt:
+                logger.warning("Missing price data for %s overnight — skipping pick", ticker)
+                continue
+            entry   = prev.get("close_price", 0)
+            exit_p  = nxt.get("open_price", 0)
+            if not entry or not exit_p:
+                continue
+            overnight_chg = (exit_p - entry) / entry * 100
+            available.append({**p, "_overnight_chg": overnight_chg})
+
+        if not available:
+            save_portfolio_value(model_name, pick_date, current_value, 0.0, 0.0,
+                                 session="overnight")
+            continue
+
+        total_alloc = sum(p.get("allocation_pct", 20.0) for p in available)
+        new_value   = 0.0
+
+        for pick in available:
+            alloc     = pick.get("allocation_pct", 20.0) / total_alloc
+            position  = current_value * alloc
+            chg_pct   = pick["_overnight_chg"] / 100.0
+            direction = pick.get("direction", "LONG").upper()
+            gross     = position * (1 - chg_pct if direction == "SHORT" else 1 + chg_pct)
+            new_value += gross * (1 - TRADE_FEE_PCT)
+
+        daily_return     = new_value - current_value
+        daily_return_pct = (daily_return / current_value * 100) if current_value else 0.0
+
+        save_portfolio_value(model_name, pick_date, round(new_value, 2),
+                             round(daily_return, 2), round(daily_return_pct, 4),
+                             session="overnight")
+
+        logger.info("[%s] overnight portfolio %s→%s: $%.2f → $%.2f (%+.2f%%)",
+                    model_name, pick_date, next_open_date,
+                    current_value, new_value, daily_return_pct)
+
+
 # ── Backfill unscored past dates ──────────────────────────────────────────────
 
 def backfill_unscored_dates() -> int:
@@ -262,8 +355,22 @@ def backfill_unscored_dates() -> int:
     for d, s in to_process:
         try:
             fetch_eod_prices(d)
-            score_predictions(d, session=s)
-            update_portfolios(d, session=s)
+            if s == "overnight":
+                # Overnight: entry = close of pick_date, exit = open of next trading day.
+                # Skip if the exit date is today or future — open prices not yet available.
+                next_d = _next_trading_date(d)
+                if next_d >= today:
+                    logger.info(
+                        "Skipping overnight backfill for %s → %s: exit date not yet available.",
+                        d, next_d,
+                    )
+                    continue
+                fetch_eod_prices(next_d)            # ensure next-day open prices exist
+                score_overnight_picks(d, next_d)    # correct close→open accuracy math
+                update_overnight_portfolios(d, next_d)  # correct close→open portfolio math
+            else:
+                score_predictions(d, session=s)     # same-day open→close
+                update_portfolios(d, session=s)
             logger.info("Backfilled %s/%s", d, s)
         except Exception as exc:
             logger.error("Backfill failed for %s/%s: %s", d, s, exc)

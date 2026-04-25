@@ -72,6 +72,36 @@ def init_db():
         if "session" not in score_cols:
             conn.execute("ALTER TABLE accuracy_scores ADD COLUMN session TEXT DEFAULT 'day'")
             logger.info("Migration: added session column to accuracy_scores")
+        # Rebuild accuracy_scores with UNIQUE(prediction_id) if missing
+        score_indexes = [r[1] for r in conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='accuracy_scores'"
+        ).fetchall()]
+        if not any("prediction_id" in idx for idx in score_indexes):
+            logger.info("Migration: rebuilding accuracy_scores with UNIQUE(prediction_id)...")
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS accuracy_scores_new (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prediction_id   INTEGER REFERENCES predictions(id),
+                    model_name      TEXT    NOT NULL,
+                    date            TEXT    NOT NULL,
+                    session         TEXT    DEFAULT 'day',
+                    ticker          TEXT    NOT NULL,
+                    predicted_rank  INTEGER,
+                    actual_change_pct REAL,
+                    is_correct      INTEGER,
+                    calculated_at   TEXT    DEFAULT (datetime('now')),
+                    UNIQUE(prediction_id)
+                );
+                INSERT OR IGNORE INTO accuracy_scores_new
+                    (prediction_id, model_name, date, session, ticker,
+                     predicted_rank, actual_change_pct, is_correct, calculated_at)
+                SELECT prediction_id, model_name, date, session, ticker,
+                       predicted_rank, actual_change_pct, is_correct, calculated_at
+                FROM accuracy_scores;
+                DROP TABLE accuracy_scores;
+                ALTER TABLE accuracy_scores_new RENAME TO accuracy_scores;
+            """)
+            logger.info("Migration: accuracy_scores rebuilt with UNIQUE(prediction_id)")
         # portfolio_values: add session column + rebuild with new UNIQUE constraint
         port_cols = [r[1] for r in conn.execute("PRAGMA table_info(portfolio_values)").fetchall()]
         if "session" not in port_cols:
@@ -277,7 +307,7 @@ def save_accuracy_score(prediction_id: int, model_name: str, date: str,
     is_correct = 1 if (change_pct > 0) == (direction == "LONG") else 0
     with get_conn() as conn:
         conn.execute(
-            """INSERT INTO accuracy_scores
+            """INSERT OR IGNORE INTO accuracy_scores
                (prediction_id, model_name, date, session, ticker, predicted_rank,
                 actual_change_pct, is_correct)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",

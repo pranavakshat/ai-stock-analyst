@@ -481,7 +481,7 @@ header {
   white-space: nowrap;
   flex-shrink: 0;
 }
-.h-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+.h-chips { display: flex; flex-wrap: nowrap; gap: 6px; flex: 1; overflow-x: auto; padding-bottom: 2px; }
 .h-chip {
   display: inline-flex;
   align-items: center;

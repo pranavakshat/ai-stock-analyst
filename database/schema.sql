@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS accuracy_scores (
     predicted_rank  INTEGER,
     actual_change_pct REAL,
     is_correct      INTEGER,                    -- 1 = direction correct, 0 = wrong
-    calculated_at   TEXT    DEFAULT (datetime('now'))
+    calculated_at   TEXT    DEFAULT (datetime('now')),
+    UNIQUE(prediction_id)                       -- one score per pick, prevents double-scoring
 );
 
 -- Simulated $10 000 portfolio per model, tracked per session
