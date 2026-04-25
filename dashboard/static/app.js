@@ -272,10 +272,12 @@ async function loadLeaderboards(period = "all") {
       } catch (_) {}
     }
 
-    const labels   = Array.from(allDates).sort();
+    const START_LABEL = "Start";
+    allDates.add(START_LABEL);
+    const labels = [START_LABEL, ...Array.from(allDates).filter(l => l !== START_LABEL).sort()];
     const datasets = Object.entries(MODELS).map(([key, meta]) => ({
       label:           meta.display,
-      data:            labels.map(l => seriesMap[key]?.[l] ?? null),
+      data:            labels.map(l => l === START_LABEL ? 0 : (seriesMap[key]?.[l] ?? null)),
       borderColor:     meta.color,
       backgroundColor: meta.color + "22",
       tension:         0.3,
