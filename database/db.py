@@ -72,11 +72,14 @@ def init_db():
         if "session" not in score_cols:
             conn.execute("ALTER TABLE accuracy_scores ADD COLUMN session TEXT DEFAULT 'day'")
             logger.info("Migration: added session column to accuracy_scores")
-        # Rebuild accuracy_scores with UNIQUE(prediction_id) if missing
-        score_indexes = [r[1] for r in conn.execute(
-            "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='accuracy_scores'"
-        ).fetchall()]
-        if not any("prediction_id" in idx for idx in score_indexes):
+        # Rebuild accuracy_scores with UNIQUE(prediction_id) if missing.
+        # Check the CREATE TABLE SQL directly — auto-indexes have NULL sql in sqlite_master,
+        # so we avoid inspecting index rows (which can contain None and raise TypeError).
+        acc_table_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='accuracy_scores'"
+        ).fetchone()
+        acc_table_sql = (acc_table_row["sql"] or "") if acc_table_row else ""
+        if "UNIQUE(prediction_id)" not in acc_table_sql:
             logger.info("Migration: rebuilding accuracy_scores with UNIQUE(prediction_id)...")
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS accuracy_scores_new (
@@ -100,6 +103,9 @@ def init_db():
                 FROM accuracy_scores;
                 DROP TABLE accuracy_scores;
                 ALTER TABLE accuracy_scores_new RENAME TO accuracy_scores;
+                CREATE INDEX IF NOT EXISTS idx_accuracy_model      ON accuracy_scores(model_name);
+                CREATE INDEX IF NOT EXISTS idx_accuracy_date       ON accuracy_scores(date);
+                CREATE INDEX IF NOT EXISTS idx_accuracy_model_date ON accuracy_scores(model_name, date);
             """)
             logger.info("Migration: accuracy_scores rebuilt with UNIQUE(prediction_id)")
         # portfolio_values: add session column + rebuild with new UNIQUE constraint

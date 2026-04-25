@@ -40,7 +40,7 @@ def morning_job():
     """
     from models.runner import run_all_models
     from email_service.emailer import send_daily_digest
-    from accuracy.tracker import score_overnight_picks
+    from accuracy.tracker import score_overnight_picks, update_overnight_portfolios
     from database.db import backup_all_to_csv
 
     today      = date.today()
@@ -50,12 +50,13 @@ def morning_job():
 
     logger.info("=== Morning job started for %s ===", today_str)
     try:
-        # 1. Score previous evening's overnight picks
+        # 1. Score previous evening's overnight picks + update overnight portfolio
         try:
             logger.info("Scoring overnight picks from %s...", prev_str)
             score_overnight_picks(pick_date=prev_str, next_open_date=today_str)
+            update_overnight_portfolios(pick_date=prev_str, next_open_date=today_str)
         except Exception as exc:
-            logger.warning("Overnight scoring failed (non-fatal): %s", exc)
+            logger.warning("Overnight scoring/portfolio failed (non-fatal): %s", exc)
 
         # 2. Run DAY session models
         day_picks = run_all_models(today_str, session="day")
