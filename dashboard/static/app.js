@@ -320,7 +320,7 @@ async function loadLeaderboards(period = "all") {
           borderColor:     meta.color,
           backgroundColor: "transparent",
           borderWidth:     2.5,
-          borderDash:      [5, 3],
+          borderDash:      [6, 3],
           pointRadius:     3,
           tension:         0.3,
           spanGaps:        true,
@@ -333,6 +333,7 @@ async function loadLeaderboards(period = "all") {
     const ctx = document.getElementById("accuracy-chart").getContext("2d");
     if (accuracyChart) accuracyChart.destroy();
     accuracyChart = new Chart(ctx, {
+      type: "bar",
       data: { labels: rawOrder, datasets: buildDatasets("cumulative") },
       options: {
         responsive: true,
