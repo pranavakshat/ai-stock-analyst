@@ -26,6 +26,12 @@ function fmtDate(iso) {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+function sessionLabel(date, session) {
+  const d = new Date(date + "T12:00:00");
+  const base = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return base + (session === "day" ? " AM" : " PM");
+}
+
 function fmtMoney(v) {
   return "$" + Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -259,8 +265,9 @@ async function loadLeaderboards(period = "all") {
         const r = await apiFetch(`/api/accuracy/${key}`);
         seriesMap[key] = {};
         (r.history || []).forEach(h => {
-          seriesMap[key][h.date] = h.daily_accuracy_pct;
-          allDates.add(h.date);
+          const lbl = sessionLabel(h.date, h.session);
+          seriesMap[key][lbl] = h.daily_accuracy_pct;
+          allDates.add(lbl);
         });
       } catch (_) {}
     }
@@ -268,7 +275,7 @@ async function loadLeaderboards(period = "all") {
     const labels   = Array.from(allDates).sort();
     const datasets = Object.entries(MODELS).map(([key, meta]) => ({
       label:           meta.display,
-      data:            labels.map(d => seriesMap[key]?.[d] ?? null),
+      data:            labels.map(l => seriesMap[key]?.[l] ?? null),
       borderColor:     meta.color,
       backgroundColor: meta.color + "22",
       tension:         0.3,
@@ -279,7 +286,7 @@ async function loadLeaderboards(period = "all") {
     if (accuracyChart) accuracyChart.destroy();
     accuracyChart = new Chart(ctx, {
       type: "line",
-      data: { labels: labels.map(fmtDate), datasets },
+      data: { labels, datasets },
       options: {
         responsive: true,
         plugins: { legend: { position: "top" } },
@@ -333,16 +340,21 @@ async function loadPortfolio() {
         const r = await apiFetch(`/api/portfolio/${key}`);
         seriesMap[key] = {};
         (r.history || []).forEach(h => {
-          seriesMap[key][h.date] = h.portfolio_value;
-          allDates.add(h.date);
+          const lbl = sessionLabel(h.date, h.session);
+          seriesMap[key][lbl] = h.portfolio_value;
+          allDates.add(lbl);
         });
       } catch (_) {}
     }
 
-    const labels   = Array.from(allDates).sort();
+    // Always start every line at $10,000 before the first real data point
+    const START_LABEL = "Start";
+    allDates.add(START_LABEL);
+    const labels = [START_LABEL, ...Array.from(allDates).filter(l => l !== START_LABEL).sort()];
+
     const datasets = Object.entries(MODELS).map(([key, meta]) => ({
       label:           meta.display,
-      data:            labels.map(d => seriesMap[key]?.[d] ?? null),
+      data:            labels.map(l => l === START_LABEL ? 10000 : (seriesMap[key]?.[l] ?? null)),
       borderColor:     meta.color,
       backgroundColor: meta.color + "22",
       tension:         0.3,
@@ -354,7 +366,7 @@ async function loadPortfolio() {
     if (portfolioChart) portfolioChart.destroy();
     portfolioChart = new Chart(ctx, {
       type: "line",
-      data: { labels: labels.map(fmtDate), datasets },
+      data: { labels, datasets },
       options: {
         responsive: true,
         plugins: { legend: { position: "top" } },

@@ -48,16 +48,17 @@ CREATE TABLE IF NOT EXISTS accuracy_scores (
     calculated_at   TEXT    DEFAULT (datetime('now'))
 );
 
--- Simulated $10 000 portfolio per model, tracked daily
+-- Simulated $10 000 portfolio per model, tracked per session
 CREATE TABLE IF NOT EXISTS portfolio_values (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     model_name      TEXT    NOT NULL,
     date            TEXT    NOT NULL,
+    session         TEXT    NOT NULL DEFAULT 'day',  -- "day" or "overnight"
     portfolio_value REAL    NOT NULL,
-    daily_return    REAL,                       -- $ gain/loss that day
-    daily_return_pct REAL,                     -- % gain/loss that day
+    daily_return    REAL,                       -- $ gain/loss that session
+    daily_return_pct REAL,                     -- % gain/loss that session
     calculated_at   TEXT    DEFAULT (datetime('now')),
-    UNIQUE(model_name, date)
+    UNIQUE(model_name, date, session)
 );
 
 -- Indexes for fast lookups

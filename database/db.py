@@ -72,6 +72,30 @@ def init_db():
         if "session" not in score_cols:
             conn.execute("ALTER TABLE accuracy_scores ADD COLUMN session TEXT DEFAULT 'day'")
             logger.info("Migration: added session column to accuracy_scores")
+        # portfolio_values: add session column + rebuild with new UNIQUE constraint
+        port_cols = [r[1] for r in conn.execute("PRAGMA table_info(portfolio_values)").fetchall()]
+        if "session" not in port_cols:
+            logger.info("Migration: rebuilding portfolio_values with session column...")
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS portfolio_values_new (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_name      TEXT    NOT NULL,
+                    date            TEXT    NOT NULL,
+                    session         TEXT    NOT NULL DEFAULT 'day',
+                    portfolio_value REAL    NOT NULL,
+                    daily_return    REAL,
+                    daily_return_pct REAL,
+                    calculated_at   TEXT    DEFAULT (datetime('now')),
+                    UNIQUE(model_name, date, session)
+                );
+                INSERT INTO portfolio_values_new
+                    (model_name, date, session, portfolio_value, daily_return, daily_return_pct, calculated_at)
+                SELECT model_name, date, 'day', portfolio_value, daily_return, daily_return_pct, calculated_at
+                FROM portfolio_values;
+                DROP TABLE portfolio_values;
+                ALTER TABLE portfolio_values_new RENAME TO portfolio_values;
+            """)
+            logger.info("Migration: portfolio_values rebuilt with session column")
     logger.info("Database initialised at %s", _get_db_path())
 
 
@@ -289,16 +313,16 @@ def get_accuracy_summary_since(start_date: str) -> list[dict]:
 
 
 def get_accuracy_over_time(model_name: str) -> list[dict]:
-    """Return daily rolling accuracy for one model (for charting)."""
+    """Return per-session accuracy for one model (for charting). One point per date+session."""
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT date,
+            """SELECT date, session,
                  ROUND(AVG(is_correct) * 100, 2) AS daily_accuracy_pct,
                  ROUND(AVG(actual_change_pct), 2) AS avg_return_pct
                FROM accuracy_scores
                WHERE model_name=?
-               GROUP BY date
-               ORDER BY date""",
+               GROUP BY date, session
+               ORDER BY date, session""",
             (model_name,),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -307,41 +331,43 @@ def get_accuracy_over_time(model_name: str) -> list[dict]:
 # ── Portfolio ─────────────────────────────────────────────────────────────────
 
 def save_portfolio_value(model_name: str, date: str, value: float,
-                         daily_return: float, daily_return_pct: float):
+                         daily_return: float, daily_return_pct: float,
+                         session: str = "day"):
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO portfolio_values
-               (model_name, date, portfolio_value, daily_return, daily_return_pct)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(model_name, date) DO UPDATE SET
+               (model_name, date, session, portfolio_value, daily_return, daily_return_pct)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(model_name, date, session) DO UPDATE SET
                  portfolio_value=excluded.portfolio_value,
                  daily_return=excluded.daily_return,
                  daily_return_pct=excluded.daily_return_pct,
                  calculated_at=datetime('now')""",
-            (model_name, date, value, daily_return, daily_return_pct),
+            (model_name, date, session, value, daily_return, daily_return_pct),
         )
 
 
 def get_portfolio_history(model_name: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT date, portfolio_value, daily_return, daily_return_pct
-               FROM portfolio_values WHERE model_name=? ORDER BY date""",
+            """SELECT date, session, portfolio_value, daily_return, daily_return_pct
+               FROM portfolio_values WHERE model_name=? ORDER BY date, session""",
             (model_name,),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def get_latest_portfolio_values() -> list[dict]:
-    """Return the most recent portfolio value for every model."""
+    """Return the most recent portfolio value for every model (latest date+session)."""
     with get_conn() as conn:
         rows = conn.execute(
             """SELECT pv.*
                FROM portfolio_values pv
                INNER JOIN (
-                 SELECT model_name, MAX(date) AS max_date
+                 SELECT model_name, MAX(date || '|' || session) AS max_key
                  FROM portfolio_values GROUP BY model_name
-               ) latest ON pv.model_name=latest.model_name AND pv.date=latest.max_date
+               ) latest ON pv.model_name=latest.model_name
+                        AND (pv.date || '|' || pv.session)=latest.max_key
                ORDER BY pv.portfolio_value DESC"""
         ).fetchall()
     return [dict(r) for r in rows]
@@ -482,14 +508,14 @@ def backup_portfolio_to_csv(backup_dir: str | None = None) -> str:
 
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT model_name, date, portfolio_value, daily_return, "
+            "SELECT model_name, date, session, portfolio_value, daily_return, "
             "daily_return_pct, calculated_at "
-            "FROM portfolio_values ORDER BY date, model_name"
+            "FROM portfolio_values ORDER BY date, session, model_name"
         ).fetchall()
 
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "model_name", "date", "portfolio_value",
+            "model_name", "date", "session", "portfolio_value",
             "daily_return", "daily_return_pct", "calculated_at",
         ])
         writer.writeheader()
@@ -593,12 +619,13 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
                         try:
                             conn.execute(
                                 """INSERT OR IGNORE INTO portfolio_values
-                                   (model_name, date, portfolio_value,
+                                   (model_name, date, session, portfolio_value,
                                     daily_return, daily_return_pct, calculated_at)
-                                   VALUES (?, ?, ?, ?, ?, ?)""",
+                                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                                 (
                                     row["model_name"],
                                     row["date"],
+                                    row.get("session", "day"),
                                     float(row["portfolio_value"]),
                                     float(row.get("daily_return") or 0),
                                     float(row.get("daily_return_pct") or 0),

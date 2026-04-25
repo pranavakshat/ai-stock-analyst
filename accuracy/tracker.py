@@ -192,12 +192,12 @@ def update_portfolios(target_date: str | None = None, session: str = "day"):
         model_picks   = [p for p in predictions if p["model_name"] == model_name]
 
         if not model_picks or not stock_results:
-            save_portfolio_value(model_name, target_date, current_value, 0.0, 0.0)
+            save_portfolio_value(model_name, target_date, current_value, 0.0, 0.0, session=session)
             continue
 
         available   = [p for p in model_picks if p["ticker"] in stock_results]
         if not available:
-            save_portfolio_value(model_name, target_date, current_value, 0.0, 0.0)
+            save_portfolio_value(model_name, target_date, current_value, 0.0, 0.0, session=session)
             continue
 
         total_alloc = sum(p.get("allocation_pct", 20.0) for p in available)
@@ -217,7 +217,8 @@ def update_portfolios(target_date: str | None = None, session: str = "day"):
         daily_return_pct = (daily_return / current_value * 100) if current_value else 0.0
 
         save_portfolio_value(model_name, target_date, round(new_value, 2),
-                             round(daily_return, 2), round(daily_return_pct, 4))
+                             round(daily_return, 2), round(daily_return_pct, 4),
+                             session=session)
 
         logger.info("[%s] %s portfolio %s: $%.2f → $%.2f (%+.2f%%)",
                     model_name, session, target_date,
