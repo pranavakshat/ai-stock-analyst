@@ -138,9 +138,19 @@ def evening_job():
 def create_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone=TIMEZONE)
 
+    # Both jobs run Mon–Fri only. Markets are closed on weekends, so:
+    #   • Friday's evening overnight picks (close Fri → open next trading day)
+    #     are scored on Monday morning. The _prev_trading_date helper above
+    #     already walks back through Sat/Sun to Friday, so this works without
+    #     any other changes.
+    #   • No models are queried on Sat/Sun (would just waste API calls and
+    #     produce picks for a closed market).
     scheduler.add_job(
         morning_job,
-        trigger=CronTrigger(hour=MORNING_HOUR, minute=MORNING_MINUTE, timezone=TIMEZONE),
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=MORNING_HOUR, minute=MORNING_MINUTE, timezone=TIMEZONE,
+        ),
         id="morning_job",
         name="Score overnight + query day models + send morning email",
         replace_existing=True,
@@ -149,7 +159,10 @@ def create_scheduler() -> BackgroundScheduler:
 
     scheduler.add_job(
         evening_job,
-        trigger=CronTrigger(hour=EVENING_HOUR, minute=EVENING_MINUTE, timezone=TIMEZONE),
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=EVENING_HOUR, minute=EVENING_MINUTE, timezone=TIMEZONE,
+        ),
         id="evening_job",
         name="Score day picks + query overnight models + send evening email",
         replace_existing=True,

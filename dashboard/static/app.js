@@ -48,6 +48,86 @@ function showToast(msg, duration = 3000) {
   setTimeout(() => el.classList.remove("show"), duration);
 }
 
+// ── Live ticker tape ─────────────────────────────────────────────────────────
+//
+// Builds a horizontally-scrolling NYSE-style ticker bar from the most recent
+// session's picks. Items are duplicated end-to-end so the CSS animation can
+// loop seamlessly (animation goes 0% → -50%, by which point the duplicates
+// have wrapped into the original positions).
+//
+// Resilient: silently does nothing if the API errors or returns no picks.
+
+async function buildTicker() {
+  const track = document.getElementById("ticker-track");
+  if (!track) return;
+
+  let preds = [];
+  try {
+    // Try today first, then walk back a few days to find the most recent picks.
+    const today = isoToday();
+    for (let i = 0; i < 5 && !preds.length; i++) {
+      const d = new Date(today + "T12:00:00");
+      d.setDate(d.getDate() - i);
+      const iso = d.toISOString().slice(0, 10);
+      // Prefer day session, fall back to overnight
+      for (const sess of ["day", "overnight"]) {
+        const r = await apiFetch(`/api/predictions?date=${iso}&session=${sess}`);
+        if (r.predictions && r.predictions.length) {
+          preds = r.predictions;
+          break;
+        }
+      }
+    }
+  } catch (_) { /* no-op */ }
+
+  if (!preds.length) {
+    track.innerHTML = '<span class="ticker-item ticker-empty">— awaiting next session —</span>';
+    return;
+  }
+
+  // Try to attach scoring results so we can show +/- % changes when known.
+  let scoresMap = {};
+  try {
+    const first = preds[0];
+    const r = await apiFetch(`/api/accuracy/scores?date=${first.date}&session=${first.session}`);
+    scoresMap = r.scores || {};
+  } catch (_) { /* no-op */ }
+
+  // Sort: by model order in MODELS, then by rank
+  const modelOrder = Object.keys(MODELS);
+  preds.sort((a, b) => {
+    const am = modelOrder.indexOf(a.model_name);
+    const bm = modelOrder.indexOf(b.model_name);
+    if (am !== bm) return am - bm;
+    return (a.rank || 0) - (b.rank || 0);
+  });
+
+  const itemsHtml = preds.map(p => {
+    const meta   = MODELS[p.model_name] || { color: "#94a3b8" };
+    const isLong = (p.direction || "LONG").toUpperCase() === "LONG";
+    const arrow  = isLong ? "▲" : "▼";
+    const dirCls = isLong ? "ticker-up" : "ticker-down";
+    const score  = scoresMap[p.id];
+    let chg = "";
+    if (score && score.actual_change_pct != null) {
+      const v = Number(score.actual_change_pct);
+      const cls = v >= 0 ? "ticker-up" : "ticker-down";
+      chg = `<span class="ticker-chg ${cls}">${v >= 0 ? "+" : ""}${v.toFixed(2)}%</span>`;
+    }
+    return `
+      <span class="ticker-item">
+        <span class="ticker-dot" style="background:${meta.color}"></span>
+        <span class="ticker-ticker">${p.ticker}</span>
+        <span class="ticker-arrow ${dirCls}">${arrow}</span>
+        ${chg}
+      </span>`;
+  }).join("");
+
+  // Duplicate the entire run so the animation loops seamlessly. The CSS
+  // moves the track by exactly -50% over the loop duration.
+  track.innerHTML = itemsHtml + itemsHtml;
+}
+
 // ── Tab routing ───────────────────────────────────────────────────────────────
 
 function switchTab(tabId) {
@@ -536,18 +616,21 @@ async function triggerJob(endpoint, label) {
 // ── Dark mode ─────────────────────────────────────────────────────────────────
 
 function initDarkMode() {
+  // The new CSS is dark by default; data-theme="light" opts into the light
+  // override. Button icon reflects the *current* theme: ☀️ on dark, 🌙 on light.
   const btn  = document.getElementById("btn-dark-mode");
   const body = document.body;
-  const saved = localStorage.getItem("theme");
-  if (saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
-    body.setAttribute("data-theme", "dark");
-    btn.textContent = "☀️";
-  }
+  const saved = localStorage.getItem("theme");      // "dark" | "light" | null
+  const isLight = saved === "light";
+  if (isLight) body.setAttribute("data-theme", "light");
+  btn.textContent = isLight ? "🌙" : "☀️";
+
   btn.addEventListener("click", () => {
-    const isDark = body.getAttribute("data-theme") === "dark";
-    body.setAttribute("data-theme", isDark ? "light" : "dark");
-    btn.textContent = isDark ? "🌙" : "☀️";
-    localStorage.setItem("theme", isDark ? "light" : "dark");
+    const goingLight = body.getAttribute("data-theme") !== "light";
+    if (goingLight) body.setAttribute("data-theme", "light");
+    else            body.removeAttribute("data-theme");
+    btn.textContent = goingLight ? "🌙" : "☀️";
+    localStorage.setItem("theme", goingLight ? "light" : "dark");
   });
 }
 
@@ -805,6 +888,11 @@ async function init() {
 
   // Load initial tab
   loadPicks(isoToday(), currentSession);
+
+  // Build the live ticker, then refresh it every 5 minutes so a freshly
+  // completed scoring run shows up without a page reload.
+  buildTicker();
+  setInterval(buildTicker, 5 * 60 * 1000);
 }
 
 document.addEventListener("DOMContentLoaded", init);
