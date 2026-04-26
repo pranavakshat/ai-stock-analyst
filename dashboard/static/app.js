@@ -683,7 +683,11 @@ async function buildAccuracyChart() {
     }
 
     const ctx = canvas.getContext("2d");
-    if (accuracyChart) { accuracyChart.destroy(); accuracyChart = null; }
+    // Destroy any existing Chart.js instance on this canvas (including stale ones
+    // not tracked by our global — Chart.getChart is the authoritative lookup).
+    const existing = Chart.getChart(canvas);
+    if (existing) existing.destroy();
+    if (accuracyChart) { try { accuracyChart.destroy(); } catch (_) {} accuracyChart = null; }
     accuracyChart = new Chart(ctx, {
       type: "bar",
       data: { labels: rawOrder, datasets: buildDatasets("cumulative") },
