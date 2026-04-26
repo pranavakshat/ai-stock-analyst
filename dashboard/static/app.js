@@ -563,23 +563,44 @@ async function buildAccuracyChart() {
   if (_accuracyRetryTimer) { clearTimeout(_accuracyRetryTimer); _accuracyRetryTimer = null; }
 
   const canvas   = document.getElementById("accuracy-chart");
-  const emptyMsg = () => {
+  if (!canvas) return;
+
+  const statusMsg = () => {
     let el = document.getElementById("accuracy-chart-pending");
     if (!el) {
       el = document.createElement("p");
       el.id = "accuracy-chart-pending";
-      el.style.cssText = "text-align:center;color:var(--text-secondary);padding:40px 0;margin:0;font-size:.9rem;";
+      el.style.cssText = "text-align:center;padding:40px 0;margin:0;font-size:.9rem;";
       canvas.parentNode.insertBefore(el, canvas);
     }
     return el;
   };
 
   try {
+    // ── Resolve model list — always fetch fresh so global MODELS lag doesn't block us ──
+    let models = MODELS;
+    if (!Object.keys(models).length) {
+      try {
+        const r = await apiFetch("/api/models");
+        models = r.models || {};
+        if (Object.keys(models).length) MODELS = models;  // backfill global
+      } catch (_) {}
+    }
+
+    const modelKeys = Object.keys(models);
+    if (!modelKeys.length) {
+      statusMsg().textContent = "⚠️ Could not load model list — retrying in 30 s";
+      statusMsg().style.color = "var(--text-secondary)";
+      canvas.style.display = "none";
+      _accuracyRetryTimer = setTimeout(() => buildAccuracyChart(), 30_000);
+      return;
+    }
+
+    // ── Fetch accuracy history for all models in parallel ──────────────────
     const allDates  = new Set();
     const seriesMap = {};
-    const rawOrder  = [];
 
-    for (const [key] of Object.entries(MODELS)) {
+    await Promise.all(modelKeys.map(async key => {
       try {
         const r = await apiFetch(`/api/accuracy/${key}`);
         seriesMap[key] = {};
@@ -589,53 +610,54 @@ async function buildAccuracyChart() {
           allDates.add(lbl);
         });
       } catch (_) {}
-    }
+    }));
 
-    const sortedLabels = Array.from(allDates).sort();
-    sortedLabels.forEach(l => { if (!rawOrder.includes(l)) rawOrder.push(l); });
+    const rawOrder = Array.from(allDates).sort();
 
-    // No data yet — show pending message and auto-retry
+    // ── No scoring data yet — show pending message and auto-retry ──────────
     if (!rawOrder.length) {
       if (accuracyChart) { accuracyChart.destroy(); accuracyChart = null; }
       canvas.style.display = "none";
-      emptyMsg().textContent = "⏳ Scoring data is still being fetched… will retry in 30 s";
+      const msg = statusMsg();
+      msg.style.color = "var(--text-secondary)";
+      msg.innerHTML = "⏳ Scoring data is still being calculated… will check again in 30 s "
+        + `<button onclick="buildAccuracyChart()" style="font-size:.8rem;cursor:pointer;padding:2px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;">Retry now</button>`;
       _accuracyRetryTimer = setTimeout(() => buildAccuracyChart(), 30_000);
       return;
     }
 
-    // Data available — clear any pending message and show canvas
+    // ── Data ready — clear pending message and render chart ────────────────
     const pending = document.getElementById("accuracy-chart-pending");
     if (pending) pending.remove();
     canvas.style.display = "";
 
     // Avg line helpers
-    function cumulativeAvg(key) {
+    function cumulativeAvg(k) {
       let correct = 0, total = 0;
       return rawOrder.map(lbl => {
-        const pct = seriesMap[key]?.[lbl];
+        const pct = seriesMap[k]?.[lbl];
         if (pct == null) return null;
         correct += pct / 100 * 5;
         total   += 5;
         return Math.round(correct / total * 100);
       });
     }
-    function rollingAvg(key, n = 5) {
-      const vals = rawOrder.map(lbl => seriesMap[key]?.[lbl] ?? null);
+    function rollingAvg(k, n = 5) {
+      const vals = rawOrder.map(lbl => seriesMap[k]?.[lbl] ?? null);
       return vals.map((_, i) => {
         const slice = vals.slice(Math.max(0, i - n + 1), i + 1).filter(v => v != null);
-        if (!slice.length) return null;
-        return Math.round(slice.reduce((a, b) => a + b, 0) / slice.length);
+        return slice.length ? Math.round(slice.reduce((a, b) => a + b, 0) / slice.length) : null;
       });
     }
 
-    // Build datasets: bar (daily) + line (avg) per model
+    // Build datasets: bar (daily accuracy) + line (running avg) per model
     function buildDatasets(mode) {
       const out = [];
-      Object.entries(MODELS).forEach(([key, meta]) => {
+      Object.entries(models).forEach(([k, meta]) => {
         out.push({
           type:            "bar",
           label:           meta.display,
-          data:            rawOrder.map(lbl => seriesMap[key]?.[lbl] ?? null),
+          data:            rawOrder.map(lbl => seriesMap[k]?.[lbl] ?? null),
           backgroundColor: meta.color + "55",
           borderColor:     meta.color,
           borderWidth:     1,
@@ -646,7 +668,7 @@ async function buildAccuracyChart() {
         out.push({
           type:            "line",
           label:           meta.display + " avg",
-          data:            mode === "cumulative" ? cumulativeAvg(key) : rollingAvg(key),
+          data:            mode === "cumulative" ? cumulativeAvg(k) : rollingAvg(k),
           borderColor:     meta.color,
           backgroundColor: "transparent",
           borderWidth:     2.5,
@@ -661,22 +683,23 @@ async function buildAccuracyChart() {
     }
 
     const ctx = canvas.getContext("2d");
-    if (accuracyChart) accuracyChart.destroy();
+    if (accuracyChart) { accuracyChart.destroy(); accuracyChart = null; }
     accuracyChart = new Chart(ctx, {
       type: "bar",
       data: { labels: rawOrder, datasets: buildDatasets("cumulative") },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
         plugins: {
           legend: {
             labels: {
-              filter: item => !item.label.endsWith(" avg"),
+              filter:        item => !item.label.endsWith(" avg"),
               usePointStyle: true,
             },
           },
           tooltip: {
             callbacks: {
-              label: ctx => ctx.dataset.label + ": " + (ctx.parsed.y != null ? ctx.parsed.y + "%" : "—"),
+              label: c => c.dataset.label + ": " + (c.parsed.y != null ? c.parsed.y + "%" : "—"),
             },
           },
         },
@@ -691,7 +714,12 @@ async function buildAccuracyChart() {
     window._accuracyBuildDatasets = buildDatasets;
 
   } catch (err) {
-    console.error("Chart load error:", err);
+    console.error("Accuracy chart error:", err);
+    const msg = statusMsg();
+    msg.style.color = "#ef4444";
+    msg.innerHTML = `⚠️ Chart failed to render: ${err.message} — `
+      + `<button onclick="buildAccuracyChart()" style="font-size:.8rem;cursor:pointer;padding:2px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;">Retry</button>`;
+    canvas.style.display = "none";
   }
 }
 
