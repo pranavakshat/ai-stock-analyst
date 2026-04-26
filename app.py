@@ -58,18 +58,26 @@ init_db()
 # Restore predictions from backups if DB was wiped (e.g. after a Railway redeploy)
 from database.db import restore_from_backups
 restored = restore_from_backups()
-if restored:
-    logger.info("Restored %d predictions from backup CSVs on startup.", restored)
-    # Kick off scoring in background so the web server doesn't block on startup
-    import threading
-    def _startup_backfill():
-        try:
-            from accuracy.tracker import backfill_unscored_dates
-            n = backfill_unscored_dates()
-            logger.info("Startup backfill complete: %d date/session combos scored.", n)
-        except Exception as exc:
-            logger.error("Startup backfill failed: %s", exc, exc_info=True)
-    threading.Thread(target=_startup_backfill, daemon=True).start()
+logger.info("Startup restore: %d rows loaded from backup CSVs.", restored)
+
+# Always kick off a background backfill so accuracy/portfolio data is current
+# after every deploy (even when predictions were already in the DB).
+import threading
+def _startup_backfill():
+    try:
+        from accuracy.tracker import backfill_unscored_dates
+        from database.db import backup_all_to_csv
+        n = backfill_unscored_dates()
+        logger.info("Startup backfill complete: %d date/session combos scored.", n)
+        if n > 0:
+            try:
+                paths = backup_all_to_csv()
+                logger.info("Post-backfill backup written: %s", list(paths.values()))
+            except Exception as bex:
+                logger.warning("Post-backfill backup failed (non-fatal): %s", bex)
+    except Exception as exc:
+        logger.error("Startup backfill failed: %s", exc, exc_info=True)
+threading.Thread(target=_startup_backfill, daemon=True).start()
 
 from scheduler import create_scheduler
 _scheduler = create_scheduler()
