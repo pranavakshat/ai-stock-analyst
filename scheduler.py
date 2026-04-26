@@ -71,6 +71,14 @@ def morning_job():
         except Exception as bex:
             logger.warning("Auto-backup failed (non-fatal): %s", bex)
 
+        # 5. Auto-commit + push backups/ so Railway redeploys can restore.
+        #    No-op unless BACKUP_GIT_PUSH=1 and GH_TOKEN are set.
+        try:
+            from git_backup import git_autocommit_backups
+            git_autocommit_backups(label="morning")
+        except Exception as gex:
+            logger.warning("git_autocommit_backups failed (non-fatal): %s", gex)
+
         logger.info("=== Morning job complete ===")
     except Exception as exc:
         logger.error("Morning job failed: %s", exc, exc_info=True)
@@ -112,6 +120,13 @@ def evening_job():
             logger.info("Auto-backup written: %s", list(paths.values()))
         except Exception as bex:
             logger.warning("Auto-backup failed (non-fatal): %s", bex)
+
+        # 6. Auto-commit + push backups/ (see morning_job for context).
+        try:
+            from git_backup import git_autocommit_backups
+            git_autocommit_backups(label="evening")
+        except Exception as gex:
+            logger.warning("git_autocommit_backups failed (non-fatal): %s", gex)
 
         logger.info("=== Evening job complete ===")
     except Exception as exc:
