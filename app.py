@@ -80,9 +80,25 @@ def _startup_backfill():
 threading.Thread(target=_startup_backfill, daemon=True).start()
 
 from scheduler import create_scheduler
-_scheduler = create_scheduler()
-_scheduler.start()
-logger.info("Scheduler started.")
+
+# ── Single-scheduler guard ───────────────────────────────────────────────────
+# Multiple gunicorn workers would each boot their own APScheduler and fire
+# every job twice (= two morning emails with different picks). We hold an
+# exclusive fcntl lock on a file in /tmp; only the first worker to grab it
+# starts the scheduler. Other workers serve HTTP only.
+import fcntl
+_scheduler_lock_path = os.environ.get("SCHEDULER_LOCK", "/tmp/ai-stock-analyst-scheduler.lock")
+try:
+    _scheduler_lock_fp = open(_scheduler_lock_path, "w")
+    fcntl.flock(_scheduler_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    _scheduler_lock_fp.write(str(os.getpid()))
+    _scheduler_lock_fp.flush()
+    _scheduler = create_scheduler()
+    _scheduler.start()
+    logger.info("Scheduler started in PID %d (acquired lock %s).", os.getpid(), _scheduler_lock_path)
+except (BlockingIOError, OSError) as exc:
+    logger.info("Scheduler not started in PID %d — another worker holds the lock (%s).", os.getpid(), exc)
+    _scheduler = None
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────

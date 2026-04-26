@@ -2,7 +2,8 @@
 builder = "NIXPACKS"
 
 [deploy]
-startCommand = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+# Single worker only — APScheduler runs in-process, so >1 worker = duplicate jobs/emails
+startCommand = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120"
 healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"

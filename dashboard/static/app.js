@@ -631,15 +631,19 @@ async function buildAccuracyChart() {
     if (pending) pending.remove();
     canvas.style.display = "";
 
-    // Avg line helpers
+    // Avg line helpers — only accumulate for labels where this model has data,
+    // and carry the running avg forward for labels where it doesn't (so the
+    // line stays continuous instead of dropping out).
     function cumulativeAvg(k) {
       let correct = 0, total = 0;
+      let lastAvg = null;
       return rawOrder.map(lbl => {
         const pct = seriesMap[k]?.[lbl];
-        if (pct == null) return null;
+        if (pct == null) return lastAvg;
         correct += pct / 100 * 5;
         total   += 5;
-        return Math.round(correct / total * 100);
+        lastAvg = Math.round(correct / total * 100);
+        return lastAvg;
       });
     }
     function rollingAvg(k, n = 5) {
@@ -697,7 +701,9 @@ async function buildAccuracyChart() {
         plugins: {
           legend: {
             labels: {
-              filter:        item => !item.label.endsWith(" avg"),
+              // Chart.js legend items use `text`, not `label`. Guard against
+              // undefined so a missing/hidden series doesn't blow up the chart.
+              filter:        item => !(item.text || "").endsWith(" avg"),
               usePointStyle: true,
             },
           },
