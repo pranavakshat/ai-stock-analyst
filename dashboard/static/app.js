@@ -32,6 +32,13 @@ function sessionLabel(date, session) {
   return base + (session === "day" ? " M" : " O");
 }
 
+function allocTier(allocation_pct) {
+  const a = Number(allocation_pct);
+  if (isNaN(a) || a <= 10)  return "Low";
+  if (a <= 20)              return "Medium";
+  return "High";
+}
+
 function fmtMoney(v) {
   return "$" + Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -199,14 +206,14 @@ async function loadPicks(dateStr, session) {
         rows = picks.map(p => {
           const dir   = (p.direction || "LONG").toUpperCase();
           const isLong = dir === "LONG";
-          const conf  = p.confidence || "Medium";
           const alloc = p.allocation_pct != null ? Number(p.allocation_pct).toFixed(0) : "20";
+          const tier  = allocTier(alloc);
           return `
           <div class="snap-row">
             <span class="snap-arrow ${isLong ? "arrow-up" : "arrow-down"}">${isLong ? "▲" : "▼"}</span>
             <span class="snap-ticker">${p.ticker}</span>
             <span class="snap-badges">
-              <span class="badge badge-${conf}">${conf}</span>
+              <span class="badge badge-${tier}">${tier}</span>
               <span class="snap-alloc">${alloc}%</span>
             </span>
           </div>`;
@@ -247,7 +254,7 @@ async function loadPicks(dateStr, session) {
                              padding:2px 8px;border-radius:999px;display:inline-block;margin-left:4px;">${dirLbl}</span>
                 <span style="background:#ede9fe;color:#5b21b6;font-size:11px;font-weight:700;
                              padding:2px 8px;border-radius:999px;display:inline-block;margin-left:4px;">${alloc}</span>
-                <span class="badge badge-${p.confidence}" style="margin-left:4px;">${p.confidence}</span>
+                <span class="badge badge-${allocTier(p.allocation_pct)}" style="margin-left:4px;">${allocTier(p.allocation_pct)}</span>
               </div>
               <div class="pick-reasoning">${p.reasoning || ""}</div>
             </div>
@@ -571,7 +578,7 @@ async function loadDateSessions(d, bodyEl, modelFilter) {
               <span class="h-chip-ticker">${p.ticker}</span>
               <span class="h-chip-alloc">${alloc}%</span>
               ${changeLbl}
-              <span class="badge badge-${p.confidence}">${p.confidence}</span>
+              <span class="badge badge-${allocTier(p.allocation_pct)}">${allocTier(p.allocation_pct)}</span>
             </div>`;
           }).join("");
 
