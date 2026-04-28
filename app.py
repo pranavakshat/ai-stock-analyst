@@ -545,7 +545,8 @@ def api_run_rescore():
         return d.isoformat()
 
     def _run():
-        from stock_data.fetcher import fetch_eod_prices
+        from stock_data.fetcher import fetch_eod_prices, fetch_premarket_prices
+        from database.db import get_predictions_by_date
         from accuracy.tracker import (
             score_predictions, update_portfolios,
             score_overnight_picks, update_overnight_portfolios,
@@ -555,8 +556,19 @@ def api_run_rescore():
                 if session == "overnight":
                     # Overnight: hold close-of-d → open-of-next-trading-day.
                     nxt = next_open_arg or _next_weekday(d)
+                    # Make sure pick_date's close prices are in stock_results.
                     fetch_eod_prices(d)
-                    fetch_eod_prices(nxt)
+                    # CRITICAL: fetch_eod_prices(nxt) only pulls prices for
+                    # nxt's OWN predictions (its day-session tickers). It does
+                    # NOT pull prices for the overnight tickers we're about
+                    # to score — those came from pick_date's overnight session.
+                    # Pull those explicitly so score_overnight_picks doesn't
+                    # silently skip half the picks. (This is the bug that left
+                    # CDNS/NUE/etc at 0% on the Apr 27 overnight rescore.)
+                    overnight_preds = get_predictions_by_date(d, session="overnight")
+                    overnight_tickers = sorted({p["ticker"] for p in overnight_preds})
+                    if overnight_tickers:
+                        fetch_premarket_prices(overnight_tickers, nxt)
                     score_overnight_picks(pick_date=d, next_open_date=nxt)
                     update_overnight_portfolios(pick_date=d, next_open_date=nxt)
                 else:
