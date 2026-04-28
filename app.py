@@ -52,6 +52,41 @@ app = Flask(
 app.secret_key = APP_SECRET_KEY
 CORS(app)
 
+
+# ── Admin token guard ────────────────────────────────────────────────────────
+#
+# All mutation endpoints (manual job triggers, CSV imports, soft-delete /
+# restore, admin tools) require a token to call. Read-only endpoints
+# (predictions, leaderboard, portfolio, accuracy, models, export) are public.
+#
+# Token comes from the ADMIN_TOKEN env var. Clients send it via either:
+#   • X-Admin-Token: <token> request header  (preferred — used by curl + JS fetch)
+#   • ?admin_token=<token>                  query param  (fallback for buttons)
+#
+# If ADMIN_TOKEN is not set on the server, the guard fails closed: every
+# protected endpoint returns 503. That's deliberate — we don't want a misconfig
+# to leave the dashboard's nuke-buttons publicly accessible.
+
+from functools import wraps
+
+
+def require_admin(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        configured = (os.environ.get("ADMIN_TOKEN") or "").strip()
+        if not configured:
+            return jsonify({"error": "Server not configured for admin access (ADMIN_TOKEN unset)."}), 503
+        provided = (
+            request.headers.get("X-Admin-Token", "")
+            or request.args.get("admin_token", "")
+        ).strip()
+        # Constant-time compare so timing can't leak the token
+        import hmac
+        if not provided or not hmac.compare_digest(provided, configured):
+            return jsonify({"error": "Unauthorized"}), 401
+        return view(*args, **kwargs)
+    return wrapped
+
 # Initialise DB and start scheduler when the app first boots
 init_db()
 
@@ -372,6 +407,7 @@ def api_models():
 # ── Manual triggers ───────────────────────────────────────────────────────────
 
 @app.route("/api/run/morning", methods=["POST"])
+@require_admin
 def api_run_morning():
     """Manually trigger the morning job (useful for testing)."""
     import threading
@@ -381,6 +417,7 @@ def api_run_morning():
 
 
 @app.route("/api/run/evening", methods=["POST"])
+@require_admin
 def api_run_evening():
     """
     Manually trigger the full evening job (score day picks + run overnight models).
@@ -412,6 +449,7 @@ def api_run_evening():
 # ── CSV Import ────────────────────────────────────────────────────────────────
 
 @app.route("/api/import/predictions", methods=["POST"])
+@require_admin
 def api_import_predictions():
     """
     Import predictions from a CSV file upload or raw CSV body, then automatically
@@ -467,17 +505,32 @@ def api_import_predictions():
 
 
 @app.route("/api/run/rescore", methods=["POST"])
+@require_admin
 def api_run_rescore():
     """
     Re-fetch EOD prices + rescore + update portfolios for a date range.
-    Query params: ?start=YYYY-MM-DD&end=YYYY-MM-DD&session=day
+    Query params:
+      ?start=YYYY-MM-DD&end=YYYY-MM-DD     — date range (defaults to today)
+      ?session=day | overnight             — which session
+      ?next_open_date=YYYY-MM-DD           — required for overnight: the
+                                             trading day whose OPEN price
+                                             closes the overnight position.
+                                             If omitted, defaults to the
+                                             next weekday after `end`.
+
+    Day session uses score_predictions (open→close on same date).
+    Overnight session uses score_overnight_picks (close → next open),
+    which is the function the morning_job calls. Using score_predictions
+    on an overnight session will produce 0% changes — that was the bug
+    that bit us on Apr 27.
     """
     import threading
     from datetime import timedelta
 
-    start   = request.args.get("start", date.today().isoformat())
-    end     = request.args.get("end", start)
-    session = request.args.get("session", "day")
+    start         = request.args.get("start", date.today().isoformat())
+    end           = request.args.get("end", start)
+    session       = request.args.get("session", "day")
+    next_open_arg = request.args.get("next_open_date", "").strip()
 
     d_cur, d_end = date.fromisoformat(start), date.fromisoformat(end)
     dates = []
@@ -485,19 +538,41 @@ def api_run_rescore():
         dates.append(d_cur.isoformat())
         d_cur += timedelta(days=1)
 
+    def _next_weekday(iso: str) -> str:
+        d = date.fromisoformat(iso) + timedelta(days=1)
+        while d.weekday() >= 5:                     # 5=Sat, 6=Sun
+            d += timedelta(days=1)
+        return d.isoformat()
+
     def _run():
         from stock_data.fetcher import fetch_eod_prices
-        from accuracy.tracker import score_predictions, update_portfolios
+        from accuracy.tracker import (
+            score_predictions, update_portfolios,
+            score_overnight_picks, update_overnight_portfolios,
+        )
         for d in dates:
             try:
-                fetch_eod_prices(d)
-                score_predictions(d, session=session)
-                update_portfolios(d, session=session)
+                if session == "overnight":
+                    # Overnight: hold close-of-d → open-of-next-trading-day.
+                    nxt = next_open_arg or _next_weekday(d)
+                    fetch_eod_prices(d)
+                    fetch_eod_prices(nxt)
+                    score_overnight_picks(pick_date=d, next_open_date=nxt)
+                    update_overnight_portfolios(pick_date=d, next_open_date=nxt)
+                else:
+                    fetch_eod_prices(d)
+                    score_predictions(d, session=session)
+                    update_portfolios(d, session=session)
             except Exception as exc:
-                logger.error("Rescore failed for %s: %s", d, exc)
+                logger.error("Rescore failed for %s/%s: %s", d, session, exc)
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"status": "rescore started", "dates": dates, "session": session})
+    return jsonify({
+        "status": "rescore started",
+        "dates": dates,
+        "session": session,
+        "next_open_date": next_open_arg or (_next_weekday(dates[-1]) if dates else None),
+    })
 
 
 # ── CSV Export ────────────────────────────────────────────────────────────────
@@ -535,6 +610,7 @@ def api_export_csv():
 # ── Soft Delete / Restore ─────────────────────────────────────────────────────
 
 @app.route("/api/predictions/<int:pred_id>", methods=["DELETE"])
+@require_admin
 def api_delete_prediction(pred_id: int):
     """Soft-delete a prediction by ID."""
     from database.db import soft_delete_prediction
@@ -545,6 +621,7 @@ def api_delete_prediction(pred_id: int):
 
 
 @app.route("/api/predictions/<int:pred_id>/restore", methods=["POST"])
+@require_admin
 def api_restore_prediction(pred_id: int):
     """Restore a soft-deleted prediction."""
     from database.db import restore_prediction
@@ -563,6 +640,7 @@ def api_deleted_predictions():
 
 
 @app.route("/api/admin/purge-deleted", methods=["POST"])
+@require_admin
 def api_purge_deleted():
     """Hard-delete predictions soft-deleted more than 10 days ago."""
     from database.db import purge_old_deleted
@@ -571,6 +649,7 @@ def api_purge_deleted():
 
 
 @app.route("/api/admin/backup-now", methods=["POST"])
+@require_admin
 def api_backup_now():
     """
     Dump the current live DB to CSVs in backups/ and (if BACKUP_GIT_PUSH=1

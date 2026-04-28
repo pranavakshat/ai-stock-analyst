@@ -714,11 +714,51 @@ async function loadDateSessions(d, bodyEl, modelFilter) {
 }
 
 // ── Manual job triggers ───────────────────────────────────────────────────────
+//
+// Mutation endpoints on the backend require an X-Admin-Token header. We store
+// the token in localStorage so the user only types it once per browser. If
+// it's missing we prompt for it; if the server rejects it we forget it and
+// reprompt next click.
+
+const ADMIN_TOKEN_KEY = "ai-stock-analyst-admin-token";
+
+function getAdminToken({ promptIfMissing = true } = {}) {
+  let tok = (localStorage.getItem(ADMIN_TOKEN_KEY) || "").trim();
+  if (!tok && promptIfMissing) {
+    tok = (prompt(
+      "Admin token required for manual job triggers.\n" +
+      "Paste the value of ADMIN_TOKEN you set on Railway:"
+    ) || "").trim();
+    if (tok) localStorage.setItem(ADMIN_TOKEN_KEY, tok);
+  }
+  return tok;
+}
+
+function clearAdminToken() {
+  localStorage.removeItem(ADMIN_TOKEN_KEY);
+}
 
 async function triggerJob(endpoint, label) {
+  const tok = getAdminToken();
+  if (!tok) {
+    showToast(`${label} cancelled — no admin token provided.`, 4000);
+    return;
+  }
   showToast(`Starting ${label}…`);
   try {
-    await fetch(endpoint, { method: "POST" });
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "X-Admin-Token": tok },
+    });
+    if (res.status === 401 || res.status === 503) {
+      clearAdminToken();
+      showToast(`${label} rejected (401/${res.status}). Token cleared — try again.`, 5000);
+      return;
+    }
+    if (!res.ok) {
+      showToast(`${label} returned ${res.status}.`, 5000);
+      return;
+    }
     showToast(`${label} started! Check server logs.`, 4000);
   } catch (err) {
     showToast(`Error: ${err.message}`, 5000);
