@@ -146,6 +146,9 @@ function switchTab(tabId) {
   if (tabId === "accuracy")  loadLeaderboards(currentPeriod);
   if (tabId === "portfolio") loadPortfolio();
   if (tabId === "history")   loadHistory();
+
+  // Live polling only runs while Today's Picks is visible.
+  if (tabId !== "today") stopLivePolling();
 }
 
 // ── Model avatars ─────────────────────────────────────────────────────────────
@@ -213,6 +216,7 @@ async function loadPicks(dateStr, session) {
             <span class="snap-arrow ${isLong ? "arrow-up" : "arrow-down"}">${isLong ? "▲" : "▼"}</span>
             <span class="snap-ticker">${p.ticker}</span>
             <span class="snap-badges">
+              <span class="live-chg" data-live-ticker="${p.ticker}"></span>
               <span class="badge badge-${tier}">${tier}</span>
               <span class="snap-alloc">${alloc}%</span>
             </span>
@@ -250,6 +254,7 @@ async function loadPicks(dateStr, session) {
             <div class="pick-body">
               <div>
                 <span class="pick-ticker">${p.ticker}</span>
+                <span class="live-chg" data-live-ticker="${p.ticker}" style="margin-left:6px;"></span>
                 <span style="background:${dirBg};color:${dirFg};font-size:11px;font-weight:700;
                              padding:2px 8px;border-radius:999px;display:inline-block;margin-left:4px;">${dirLbl}</span>
                 <span style="background:#ede9fe;color:#5b21b6;font-size:11px;font-weight:700;
@@ -267,9 +272,111 @@ async function loadPicks(dateStr, session) {
     });
 
     document.getElementById("last-updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+
+    // Kick off live intraday tracking for these picks. Only meaningful when
+    // viewing today's picks — historical dates always show "CLOSED".
+    startLivePolling(dateStr);
   } catch (err) {
     snapshotEl.innerHTML = `<div class="loading">Error: ${err.message}</div>`;
     detailEl.innerHTML   = "";
+    stopLivePolling();
+  }
+}
+
+// ── Live intraday tracking ───────────────────────────────────────────────────
+//
+// Polls /api/live/prices every 60 s while the Today's Picks tab is visible
+// AND the user is viewing today's date. Shows a 🟢 LIVE / ⏸ CLOSED indicator
+// in the picks section header. Each pick gets a colored % badge updated in
+// place. Failures are silent — last known values stay on screen.
+//
+// Lifecycle:
+//   • startLivePolling(dateStr)  — called from loadPicks on success
+//   • stopLivePolling()          — called on tab switch, error, etc.
+
+let _livePollTimer = null;
+const LIVE_POLL_INTERVAL_MS = 60_000;
+
+function setLiveStatus(state) {
+  // state ∈ {"live","closed","unknown"}
+  const el = document.getElementById("live-status");
+  if (!el) return;
+  el.classList.remove("live-status-live", "live-status-closed", "live-status-unknown");
+  el.classList.add(`live-status-${state}`);
+  const lbl = el.querySelector(".live-status-label");
+  if (lbl) {
+    lbl.textContent = state === "live"   ? "LIVE"
+                    : state === "closed" ? "CLOSED"
+                    : "—";
+  }
+}
+
+function _collectVisibleTickers() {
+  const set = new Set();
+  document.querySelectorAll("#tab-today [data-live-ticker]").forEach(el => {
+    const t = el.getAttribute("data-live-ticker");
+    if (t) set.add(t);
+  });
+  return Array.from(set);
+}
+
+function _renderLiveBadges(payload) {
+  Object.entries(payload).forEach(([ticker, info]) => {
+    if (!info || info.change_pct == null) return;
+    const v = Number(info.change_pct);
+    const cls = v > 0.0001 ? "live-chg-up"
+              : v < -0.0001 ? "live-chg-down"
+              : "live-chg-flat";
+    const text = `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+    document.querySelectorAll(`[data-live-ticker="${ticker}"]`).forEach(el => {
+      el.classList.remove("live-chg-up", "live-chg-down", "live-chg-flat");
+      el.classList.add(cls);
+      el.textContent = text;
+    });
+  });
+}
+
+async function _pollLiveOnce() {
+  const tickers = _collectVisibleTickers();
+  if (!tickers.length) return null;
+  try {
+    const r = await fetch(`/api/live/prices?tickers=${encodeURIComponent(tickers.join(","))}`);
+    if (!r.ok) return null;
+    const payload = await r.json();
+    if (payload && Object.keys(payload).length) {
+      _renderLiveBadges(payload);
+      // Pick any one ticker's market-open flag — the backend stamps them all
+      // identically per request.
+      const first = Object.values(payload)[0];
+      setLiveStatus(first?.is_market_open ? "live" : "closed");
+      return first?.is_market_open;
+    }
+  } catch (_) { /* silent — keep last values */ }
+  return null;
+}
+
+function stopLivePolling() {
+  if (_livePollTimer) { clearInterval(_livePollTimer); _livePollTimer = null; }
+}
+
+async function startLivePolling(dateStr) {
+  stopLivePolling();
+
+  // Historical dates: show CLOSED, no polling, no live badges.
+  if (dateStr && dateStr !== isoToday()) {
+    setLiveStatus("closed");
+    document.querySelectorAll("#tab-today [data-live-ticker]").forEach(el => {
+      el.textContent = "";
+    });
+    return;
+  }
+
+  setLiveStatus("unknown");
+  const isOpen = await _pollLiveOnce();
+  // Only schedule subsequent polls if the market is open. If closed, the
+  // first call already set the indicator and the user can refresh manually.
+  if (isOpen) {
+    _livePollTimer = setInterval(_pollLiveOnce, LIVE_POLL_INTERVAL_MS);
   }
 }
 
