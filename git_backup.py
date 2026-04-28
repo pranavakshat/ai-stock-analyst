@@ -7,21 +7,40 @@ auto-backup writes those CSVs but never commits them, so any redeploy
 between manual commits loses data. This helper closes that gap by
 committing + pushing backups/ at the end of every scheduled job.
 
+Implementation: Railway's Nixpacks build typically does NOT include the
+`.git` directory in the deployed image, so we can't run git commands in
+place. Instead, on each invocation we:
+
+  1. Shadow-clone the repo to /tmp via the authed GitHub URL
+  2. Copy the freshly-written /app/backups/*.csv into the clone's backups/
+  3. Stage / commit / push from the clone
+  4. Clean up the clone
+
+This is slightly slower than a local commit but is independent of how
+the container was built. The shadow clone is shallow (depth=1) so it's
+fast even as history grows.
+
 Designed to fail safe: every function returns False on any error and
 logs a warning. A push failure must never crash the morning/evening job.
 
-Required env vars (only on hosts that should push):
+Required env vars:
   BACKUP_GIT_PUSH=1                — opt-in flag
   GH_TOKEN=<github personal token> — fine-scoped PAT with contents:write
-                                     on this repo
-  GIT_USER_NAME / GIT_USER_EMAIL   — optional, defaults set below
+                                     on the target repo
+  BACKUP_REPO_URL                  — optional override for the remote URL.
+                                     Required if /app has no .git/config.
+                                     Example:
+                                       https://github.com/pranavakshat/ai-stock-analyst.git
+  GIT_USER_NAME / GIT_USER_EMAIL   — optional; defaults set below
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -34,12 +53,17 @@ BACKUPS_DIR = REPO_ROOT / "backups"
 DEFAULT_GIT_USER_NAME = "AI Stock Analyst Bot"
 DEFAULT_GIT_USER_EMAIL = "ai-stock-analyst-bot@users.noreply.github.com"
 
+# Hard-coded fallback so deploys without BACKUP_REPO_URL still work for the
+# project this file lives in. Override via env var if you fork the repo.
+DEFAULT_REPO_URL = "https://github.com/pranavakshat/ai-stock-analyst.git"
 
-def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    """Run a git command in the repo root with captured output."""
+
+def _run(cmd: list[str], cwd: str | None = None,
+         **kwargs) -> subprocess.CompletedProcess:
+    """Run a command with captured output. Never raises on non-zero exit."""
     return subprocess.run(
         cmd,
-        cwd=str(REPO_ROOT),
+        cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
@@ -47,43 +71,53 @@ def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     )
 
 
-def _has_changes_in_backups() -> bool:
-    """True iff there's anything new/modified under backups/ vs HEAD."""
-    res = _run(["git", "status", "--porcelain", "--", "backups/"])
-    return res.returncode == 0 and bool(res.stdout.strip())
-
-
-def _ensure_identity() -> None:
-    """Set git user.name / user.email locally if not already configured."""
-    name = os.environ.get("GIT_USER_NAME", DEFAULT_GIT_USER_NAME)
-    email = os.environ.get("GIT_USER_EMAIL", DEFAULT_GIT_USER_EMAIL)
-    _run(["git", "config", "user.name", name])
-    _run(["git", "config", "user.email", email])
-
-
-def _authed_remote_url(token: str) -> str | None:
+def _resolve_remote_url() -> str | None:
     """
-    Return the origin URL with the GH_TOKEN injected for HTTPS auth, or None
-    if the remote isn't an https GitHub URL we recognise.
+    Pick the remote URL to push to. Order of preference:
+      1. BACKUP_REPO_URL env var
+      2. `git remote get-url origin` if /app/.git exists
+      3. DEFAULT_REPO_URL fallback
     """
-    res = _run(["git", "remote", "get-url", "origin"])
-    if res.returncode != 0:
-        return None
-    url = res.stdout.strip()
+    env = os.environ.get("BACKUP_REPO_URL", "").strip()
+    if env:
+        return env
+
+    res = _run(["git", "remote", "get-url", "origin"], cwd=str(REPO_ROOT))
+    if res.returncode == 0 and res.stdout.strip():
+        return res.stdout.strip()
+
+    return DEFAULT_REPO_URL
+
+
+def _build_authed_url(url: str, token: str) -> str | None:
+    """Inject x-access-token:<token>@ into the netloc of an https://github.com URL."""
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.netloc.endswith("github.com"):
         return None
-    # Inject x-access-token:<token>@ into netloc
-    netloc = f"x-access-token:{token}@{parsed.netloc.split('@')[-1]}"
-    return urlunparse(parsed._replace(netloc=netloc))
+    netloc_host = parsed.netloc.split("@")[-1]
+    return urlunparse(parsed._replace(netloc=f"x-access-token:{token}@{netloc_host}"))
+
+
+def _copy_backups_into(dest_dir: Path) -> int:
+    """Copy /app/backups/*.csv into <dest>/backups/. Returns number of files copied."""
+    if not BACKUPS_DIR.exists():
+        return 0
+    target = dest_dir / "backups"
+    target.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for src in BACKUPS_DIR.glob("*.csv"):
+        try:
+            shutil.copy2(src, target / src.name)
+            n += 1
+        except Exception as exc:
+            logger.warning("Failed copying %s into shadow clone: %s", src.name, exc)
+    return n
 
 
 def git_autocommit_backups(label: str = "auto-backup") -> bool:
     """
-    Stage backups/, commit with a timestamped message, push to origin.
-
-    Returns True on a successful push, False otherwise (no changes, no
-    token, push failed, etc.). Never raises.
+    Shadow-clone the repo, copy current backups/*.csv in, commit, push.
+    Returns True on a successful push, False otherwise. Never raises.
     """
     if os.environ.get("BACKUP_GIT_PUSH", "0") != "1":
         logger.info("git_autocommit_backups: BACKUP_GIT_PUSH != 1 — skipping.")
@@ -93,65 +127,87 @@ def git_autocommit_backups(label: str = "auto-backup") -> bool:
         logger.warning("git_autocommit_backups: backups/ dir missing — skipping.")
         return False
 
-    # No-op if there's nothing to commit. Avoids empty-commit noise and
-    # avoids racing pushes when both morning + evening land on the same minute.
-    if not _has_changes_in_backups():
-        logger.info("git_autocommit_backups: no changes under backups/ — skipping.")
-        return False
-
     token = os.environ.get("GH_TOKEN", "").strip()
     if not token:
         logger.warning("git_autocommit_backups: GH_TOKEN not set — cannot push.")
         return False
 
+    remote_url = _resolve_remote_url()
+    if not remote_url:
+        logger.warning("git_autocommit_backups: could not resolve remote URL — skipping.")
+        return False
+
+    authed = _build_authed_url(remote_url, token)
+    if not authed:
+        logger.warning(
+            "git_autocommit_backups: remote URL %r is not an https GitHub URL — skipping.",
+            remote_url,
+        )
+        return False
+
+    name  = os.environ.get("GIT_USER_NAME",  DEFAULT_GIT_USER_NAME)
+    email = os.environ.get("GIT_USER_EMAIL", DEFAULT_GIT_USER_EMAIL)
+
+    tmp = Path(tempfile.mkdtemp(prefix="ai-stock-analyst-clone-"))
     try:
-        # Resolve the authed push URL up-front so we can early-exit without
-        # leaving a phantom local commit if the remote isn't auth-able.
-        authed = _authed_remote_url(token)
-        if not authed:
-            logger.warning("git_autocommit_backups: origin is not an https GitHub URL — skipping.")
+        # 1. Shallow-clone main into the temp dir.
+        clone = _run(["git", "clone", "--depth", "1", "--branch", "main",
+                      authed, str(tmp / "repo")])
+        if clone.returncode != 0:
+            logger.warning(
+                "git_autocommit_backups: clone failed: %s",
+                (clone.stderr or clone.stdout).strip(),
+            )
+            return False
+        repo = tmp / "repo"
+
+        # 2. Configure identity inside the clone.
+        _run(["git", "config", "user.name",  name],  cwd=str(repo))
+        _run(["git", "config", "user.email", email], cwd=str(repo))
+
+        # 3. Copy /app/backups/*.csv into the clone's backups/.
+        copied = _copy_backups_into(repo)
+        if copied == 0:
+            logger.info("git_autocommit_backups: no CSVs in /app/backups/ to commit.")
             return False
 
-        _ensure_identity()
-
-        add = _run(["git", "add", "--", "backups/"])
-        if add.returncode != 0:
-            logger.warning("git add backups/ failed: %s", add.stderr.strip())
+        # 4. Stage and check whether anything actually differs from origin/main.
+        _run(["git", "add", "--", "backups/"], cwd=str(repo))
+        diff = _run(["git", "diff", "--cached", "--quiet"], cwd=str(repo))
+        if diff.returncode == 0:
+            # Exit 0 from --quiet means no staged differences.
+            logger.info("git_autocommit_backups: backups already up to date on origin/main.")
             return False
 
-        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        # 5. Commit and push.
+        ts  = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         msg = f"chore(backups): {label} {ts}"
-        commit = _run(["git", "commit", "-m", msg])
+        commit = _run(["git", "commit", "-m", msg], cwd=str(repo))
         if commit.returncode != 0:
-            # Could be "nothing to commit" if the index matched HEAD after add
-            if "nothing to commit" in (commit.stdout + commit.stderr).lower():
-                logger.info("git_autocommit_backups: nothing to commit after add.")
-                return False
-            logger.warning("git commit failed: %s", (commit.stderr or commit.stdout).strip())
+            logger.warning(
+                "git_autocommit_backups: commit failed: %s",
+                (commit.stderr or commit.stdout).strip(),
+            )
             return False
 
-        # Fetch + rebase on top of remote main so we don't fight a manual push.
-        # Use the authed URL — the regular `origin` has no creds on Railway.
-        fetch = _run(["git", "fetch", authed, "main"])
-        if fetch.returncode != 0:
-            logger.warning("git fetch failed (will still try push): %s",
-                           (fetch.stderr or fetch.stdout).strip())
-        else:
-            rebase = _run(["git", "rebase", "--autostash", "FETCH_HEAD"])
-            if rebase.returncode != 0:
-                logger.warning("git rebase FETCH_HEAD failed (will still try push): %s",
-                               (rebase.stderr or rebase.stdout).strip())
-                # Abort the rebase so we don't leave the tree in REBASE state
-                _run(["git", "rebase", "--abort"])
-
-        push = _run(["git", "push", authed, "HEAD:main"])
+        push = _run(["git", "push", "origin", "HEAD:main"], cwd=str(repo))
         if push.returncode != 0:
-            logger.warning("git push failed: %s", (push.stderr or push.stdout).strip())
+            logger.warning(
+                "git_autocommit_backups: push failed: %s",
+                (push.stderr or push.stdout).strip(),
+            )
             return False
 
-        logger.info("git_autocommit_backups: pushed %s", msg)
+        logger.info("git_autocommit_backups: pushed %s (%d CSVs)", msg, copied)
         return True
 
-    except Exception as exc:   # belt-and-braces — must never crash caller
+    except Exception as exc:
+        # Belt-and-braces — must never crash the calling job.
         logger.warning("git_autocommit_backups: unexpected error: %s", exc)
         return False
+    finally:
+        # Clean up the shadow clone — we never want it to grow on the FS.
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
