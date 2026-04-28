@@ -545,30 +545,64 @@ def api_run_rescore():
         return d.isoformat()
 
     def _run():
-        from stock_data.fetcher import fetch_eod_prices, fetch_premarket_prices
-        from database.db import get_predictions_by_date
+        from stock_data.fetcher import fetch_eod_prices
+        from database.db import get_predictions_by_date, save_stock_result
         from accuracy.tracker import (
             score_predictions, update_portfolios,
             score_overnight_picks, update_overnight_portfolios,
         )
+        from datetime import datetime as _dt, timedelta as _td
+
+        def _fetch_history_for_overnight_tickers(tickers, target_date):
+            """
+            Fetch the actual day-candle for each ticker on `target_date` and
+            store real (open, close) values in stock_results.
+
+            Critical: do NOT use fetch_premarket_prices here. That helper saves
+            open_price = close_price = current_price (same value), which means
+            calling it for next_open_date and then computing change_pct against
+            it gives ~0% (or worse, OVERWRITES correct data already in
+            stock_results with a flat-line snapshot). We need the real intraday
+            open from history(start, end).
+            """
+            try:
+                import yfinance as yf
+            except Exception as exc:
+                logger.warning("yfinance unavailable for overnight rescore: %s", exc)
+                return
+            end = (_dt.fromisoformat(target_date) + _td(days=1)).date().isoformat()
+            for ticker in tickers:
+                try:
+                    h = yf.Ticker(ticker).history(start=target_date, end=end, auto_adjust=True)
+                    if h is None or h.empty:
+                        logger.info("No history for %s on %s — skipping", ticker, target_date)
+                        continue
+                    row = h.iloc[0]
+                    save_stock_result(
+                        target_date, ticker,
+                        float(row["Open"]), float(row["Close"]),
+                        int(row.get("Volume", 0) or 0),
+                    )
+                    logger.info("Fetched %s %s: open=%.4f close=%.4f",
+                                ticker, target_date, float(row["Open"]), float(row["Close"]))
+                except Exception as exc:
+                    logger.warning("Failed fetching %s %s: %s", ticker, target_date, exc)
+
         for d in dates:
             try:
                 if session == "overnight":
                     # Overnight: hold close-of-d → open-of-next-trading-day.
                     nxt = next_open_arg or _next_weekday(d)
-                    # Make sure pick_date's close prices are in stock_results.
-                    fetch_eod_prices(d)
-                    # CRITICAL: fetch_eod_prices(nxt) only pulls prices for
-                    # nxt's OWN predictions (its day-session tickers). It does
-                    # NOT pull prices for the overnight tickers we're about
-                    # to score — those came from pick_date's overnight session.
-                    # Pull those explicitly so score_overnight_picks doesn't
-                    # silently skip half the picks. (This is the bug that left
-                    # CDNS/NUE/etc at 0% on the Apr 27 overnight rescore.)
+                    # 1. Fetch real open/close candles for both dates, scoped
+                    #    to the actual overnight ticker list (NOT to the date's
+                    #    own predictions, which is what fetch_eod_prices uses
+                    #    by default).
                     overnight_preds = get_predictions_by_date(d, session="overnight")
                     overnight_tickers = sorted({p["ticker"] for p in overnight_preds})
                     if overnight_tickers:
-                        fetch_premarket_prices(overnight_tickers, nxt)
+                        _fetch_history_for_overnight_tickers(overnight_tickers, d)
+                        _fetch_history_for_overnight_tickers(overnight_tickers, nxt)
+                    # 2. Score against entry=close(d), exit=open(nxt).
                     score_overnight_picks(pick_date=d, next_open_date=nxt)
                     update_overnight_portfolios(pick_date=d, next_open_date=nxt)
                 else:
