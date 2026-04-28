@@ -694,6 +694,79 @@ def api_purge_deleted():
     return jsonify({"status": "ok", "purged": count})
 
 
+@app.route("/api/admin/whoami", methods=["GET"])
+@require_admin
+def api_whoami():
+    """
+    Lightweight auth-check. If the X-Admin-Token (or ?admin_token=) header
+    matches ADMIN_TOKEN on the server, returns 200 with {"auth":"valid"}.
+    Anything else → 401 / 503 from the @require_admin decorator.
+
+    Use this to verify the token works WITHOUT triggering any side effects.
+    Curl it instead of clicking Run Morning when you only want to test auth.
+    """
+    return jsonify({"status": "ok", "auth": "valid"})
+
+
+@app.route("/api/admin/delete-session", methods=["POST"])
+@require_admin
+def api_delete_session():
+    """
+    Hard-delete every prediction + accuracy_score + portfolio_value row for a
+    specific (date, session) pair. Useful for nuking corrupted runs (e.g. an
+    unauthorized 'Run Morning' click that overwrote that day's real picks).
+
+    Required query params:
+      ?date=YYYY-MM-DD
+      ?session=day | overnight
+
+    Optional:
+      ?confirm=true   safety check — request is rejected without it
+    """
+    from database.db import get_conn
+
+    target_date = (request.args.get("date") or "").strip()
+    sess        = (request.args.get("session") or "").strip()
+    confirm     = (request.args.get("confirm") or "").strip().lower()
+
+    if not target_date or sess not in ("day", "overnight"):
+        return jsonify({
+            "error": "Required: ?date=YYYY-MM-DD&session=day|overnight",
+        }), 400
+    if confirm != "true":
+        return jsonify({
+            "error": "Pass &confirm=true to actually delete. This is a hard delete.",
+            "would_delete": {"date": target_date, "session": sess},
+        }), 400
+
+    with get_conn() as conn:
+        n_pred = conn.execute(
+            "DELETE FROM predictions WHERE date=? AND session=?",
+            (target_date, sess),
+        ).rowcount
+        n_score = conn.execute(
+            "DELETE FROM accuracy_scores WHERE date=? AND session=?",
+            (target_date, sess),
+        ).rowcount
+        n_port = conn.execute(
+            "DELETE FROM portfolio_values WHERE date=? AND session=?",
+            (target_date, sess),
+        ).rowcount
+
+    logger.warning(
+        "Admin delete-session %s/%s: predictions=%d accuracy=%d portfolio=%d",
+        target_date, sess, n_pred, n_score, n_port,
+    )
+    return jsonify({
+        "status": "ok",
+        "date": target_date,
+        "session": sess,
+        "predictions_deleted": n_pred,
+        "accuracy_scores_deleted": n_score,
+        "portfolio_values_deleted": n_port,
+    })
+
+
 @app.route("/api/admin/backup-now", methods=["POST"])
 @require_admin
 def api_backup_now():
