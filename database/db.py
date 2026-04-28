@@ -589,15 +589,19 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
     if pred_count > 0:
         logger.info("DB has %d predictions — skipping predictions restore.", pred_count)
     else:
+        # Load EVERY predictions_*.csv we have, not just the alphabetically-last
+        # file. Each backup CSV is a snapshot up to that date, but backfill
+        # files (added later) may carry rows that aren't in any newer snapshot.
+        # import_predictions_from_csv dedups on (date, model_name, session, rank),
+        # so overlapping rows are safely updated rather than duplicated.
         csv_files = sorted(backup_path.glob("predictions_*.csv")) if backup_path.exists() else []
-        if csv_files:
-            latest = csv_files[-1]
+        for csv_file in csv_files:
             try:
-                n = import_predictions_from_csv(latest.read_text())
-                logger.info("Restored %d predictions from %s", n, latest.name)
+                n = import_predictions_from_csv(csv_file.read_text())
+                logger.info("Restored %d predictions from %s", n, csv_file.name)
                 total += n
             except Exception as exc:
-                logger.error("Failed to restore predictions from %s: %s", latest.name, exc)
+                logger.error("Failed to restore predictions from %s: %s", csv_file.name, exc)
 
     # ── Accuracy scores ───────────────────────────────────────────────────────
     with get_conn() as conn:
@@ -606,11 +610,12 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
     if score_count > 0:
         logger.info("DB has %d accuracy scores — skipping restore.", score_count)
     else:
+        # Load every accuracy_*.csv (not just the latest). UNIQUE(prediction_id)
+        # already prevents duplicates, so iterating all files is safe.
         csv_files = sorted(backup_path.glob("accuracy_*.csv")) if backup_path.exists() else []
-        if csv_files:
-            latest = csv_files[-1]
+        for csv_file in csv_files:
             try:
-                rows = list(csv.DictReader(latest.open()))
+                rows = list(csv.DictReader(csv_file.open()))
                 with get_conn() as conn:
                     for row in rows:
                         try:
@@ -634,9 +639,9 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
                             total += 1
                         except Exception:
                             pass
-                logger.info("Restored %d accuracy scores from %s", len(rows), latest.name)
+                logger.info("Restored %d accuracy scores from %s", len(rows), csv_file.name)
             except Exception as exc:
-                logger.error("Failed to restore accuracy scores: %s", exc)
+                logger.error("Failed to restore accuracy scores from %s: %s", csv_file.name, exc)
 
     # ── Portfolio values ──────────────────────────────────────────────────────
     with get_conn() as conn:
@@ -645,11 +650,11 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
     if port_count > 0:
         logger.info("DB has %d portfolio rows — skipping restore.", port_count)
     else:
+        # Load every portfolio_*.csv. UNIQUE(model_name, date, session) dedups.
         csv_files = sorted(backup_path.glob("portfolio_*.csv")) if backup_path.exists() else []
-        if csv_files:
-            latest = csv_files[-1]
+        for csv_file in csv_files:
             try:
-                rows = list(csv.DictReader(latest.open()))
+                rows = list(csv.DictReader(csv_file.open()))
                 with get_conn() as conn:
                     for row in rows:
                         try:
@@ -671,9 +676,9 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
                             total += 1
                         except Exception:
                             pass
-                logger.info("Restored %d portfolio rows from %s", len(rows), latest.name)
+                logger.info("Restored %d portfolio rows from %s", len(rows), csv_file.name)
             except Exception as exc:
-                logger.error("Failed to restore portfolio values: %s", exc)
+                logger.error("Failed to restore portfolio values from %s: %s", csv_file.name, exc)
 
     if total:
         logger.info("=== Startup restore complete: %d total rows ===", total)
