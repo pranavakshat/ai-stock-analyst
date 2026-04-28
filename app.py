@@ -223,6 +223,129 @@ def api_accuracy_scores():
     return jsonify({"scores": scores, "date": target_date, "session": session})
 
 
+# ── Live intraday prices ─────────────────────────────────────────────────────
+#
+# Read-only, ephemeral, never touches the DB. Powers the live-tracking widgets
+# on the Today's Picks tab. The 45 s in-process cache is keyed by the sorted
+# ticker tuple so rapid tab-switches don't hammer Yahoo with the same query.
+
+_LIVE_CACHE: dict[tuple, tuple[float, dict]] = {}   # {key: (expires_at, payload)}
+_LIVE_CACHE_TTL = 45.0    # seconds
+
+
+def _is_us_market_open() -> bool:
+    """True iff it's currently 9:30 AM – 4:00 PM ET on a weekday.
+
+    Note: doesn't account for US market holidays — yfinance will simply
+    return stale prices on those days, which is the correct behavior anyway
+    (we just won't show a 'live' badge fluctuating against frozen data).
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt, time as _time
+        now_et = _dt.now(ZoneInfo("America/New_York"))
+        if now_et.weekday() >= 5:                         # Sat/Sun
+            return False
+        return _time(9, 30) <= now_et.time() < _time(16, 0)
+    except Exception:
+        return False
+
+
+def _fetch_live_prices(tickers: tuple[str, ...]) -> dict[str, dict]:
+    """One-shot live price lookup. Never raises — returns {} on any failure."""
+    if not tickers:
+        return {}
+    try:
+        import yfinance as yf
+    except Exception as exc:
+        logger.warning("yfinance import failed in /api/live/prices: %s", exc)
+        return {}
+
+    out: dict[str, dict] = {}
+    market_open = _is_us_market_open()
+
+    for ticker in tickers:
+        try:
+            t  = yf.Ticker(ticker)
+            fi = getattr(t, "fast_info", None)
+
+            current = None
+            opn     = None
+            if fi is not None:
+                current = (getattr(fi, "last_price", None)
+                           or getattr(fi, "regular_market_price", None))
+                opn     = (getattr(fi, "open", None)
+                           or getattr(fi, "regular_market_open", None))
+
+            # Fall back to a 2-day history if fast_info didn't give us
+            # a usable price (some delisted/illiquid tickers, etc.).
+            if current is None or opn is None:
+                hist = t.history(period="2d", auto_adjust=True)
+                if hist is not None and not hist.empty:
+                    last = hist.iloc[-1]
+                    if current is None: current = float(last["Close"])
+                    if opn     is None: opn     = float(last["Open"])
+
+            if current is None or opn is None:
+                continue
+
+            current = float(current)
+            opn     = float(opn)
+            change_pct = ((current - opn) / opn * 100.0) if opn else 0.0
+
+            out[ticker.upper()] = {
+                "current_price":  round(current, 4),
+                "open_price":     round(opn, 4),
+                "change_pct":     round(change_pct, 4),
+                "is_market_open": market_open,
+            }
+        except Exception as exc:
+            # One bad ticker shouldn't kill the rest of the response.
+            logger.debug("live price fetch failed for %s: %s", ticker, exc)
+            continue
+
+    return out
+
+
+@app.route("/api/live/prices")
+def api_live_prices():
+    """
+    GET /api/live/prices?tickers=AAPL,MSFT,...
+
+    Returns {TICKER: {current_price, open_price, change_pct, is_market_open}}.
+    45 s in-process cache. Empty {} on any upstream failure (caller's
+    responsibility to render a graceful fallback).
+    """
+    import time as _time
+
+    raw = (request.args.get("tickers") or "").strip()
+    if not raw:
+        return jsonify({})
+
+    tickers = tuple(sorted({t.strip().upper() for t in raw.split(",") if t.strip()}))
+    if not tickers:
+        return jsonify({})
+
+    now = _time.time()
+
+    # Drop stale entries opportunistically so the cache can't grow without bound.
+    for k in [k for k, (exp, _) in _LIVE_CACHE.items() if exp <= now]:
+        _LIVE_CACHE.pop(k, None)
+
+    cached = _LIVE_CACHE.get(tickers)
+    if cached and cached[0] > now:
+        return jsonify(cached[1])
+
+    try:
+        payload = _fetch_live_prices(tickers)
+    except Exception as exc:
+        logger.warning("/api/live/prices unexpected error: %s", exc)
+        payload = {}
+
+    _LIVE_CACHE[tickers] = (now + _LIVE_CACHE_TTL, payload)
+    return jsonify(payload)
+
+
 # ── Portfolio ─────────────────────────────────────────────────────────────────
 
 @app.route("/api/portfolio")
@@ -445,6 +568,40 @@ def api_purge_deleted():
     from database.db import purge_old_deleted
     count = purge_old_deleted(days=10)
     return jsonify({"status": "ok", "purged": count})
+
+
+@app.route("/api/admin/backup-now", methods=["POST"])
+def api_backup_now():
+    """
+    Dump the current live DB to CSVs in backups/ and (if BACKUP_GIT_PUSH=1
+    and GH_TOKEN is set) commit + push them. Use this before a manual
+    redeploy to guarantee in-flight data survives the SQLite wipe.
+
+    Pure write-out + commit; never queries models, never re-scores, never
+    sends emails. Safe to call at any time.
+    """
+    from database.db import backup_all_to_csv
+    try:
+        paths = backup_all_to_csv()
+    except Exception as exc:
+        logger.error("backup-now: backup_all_to_csv failed: %s", exc, exc_info=True)
+        return jsonify({"status": "error", "stage": "csv", "error": str(exc)}), 500
+
+    pushed = False
+    push_error = None
+    try:
+        from git_backup import git_autocommit_backups
+        pushed = git_autocommit_backups(label="manual")
+    except Exception as exc:
+        push_error = str(exc)
+        logger.warning("backup-now: git_autocommit_backups failed: %s", exc)
+
+    return jsonify({
+        "status":    "ok",
+        "csvs":      list(paths.values()) if isinstance(paths, dict) else paths,
+        "git_push":  pushed,
+        "push_error": push_error,
+    })
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
