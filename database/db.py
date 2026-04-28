@@ -308,15 +308,28 @@ def get_stock_results_by_date(date: str) -> dict[str, dict]:
 def save_accuracy_score(prediction_id: int, model_name: str, date: str,
                         ticker: str, rank: int, change_pct: float,
                         direction: str = "LONG", session: str = "day"):
-    """Insert one scored prediction row. Accounts for LONG/SHORT and day/overnight."""
+    """
+    Upsert one scored prediction row. Accounts for LONG/SHORT and day/overnight.
+
+    UPSERT (not INSERT OR IGNORE): when a row already exists for this
+    prediction_id, OVERWRITE the volatile fields (actual_change_pct,
+    is_correct, calculated_at). This is required so manual rescores via
+    /api/run/rescore actually replace stale values — the original
+    INSERT OR IGNORE silently no-op'd, which masked an Apr 27 overnight
+    rescore bug after a wrong-function call wrote 0% placeholder rows.
+    """
     direction  = direction.upper()
     is_correct = 1 if (change_pct > 0) == (direction == "LONG") else 0
     with get_conn() as conn:
         conn.execute(
-            """INSERT OR IGNORE INTO accuracy_scores
-               (prediction_id, model_name, date, session, ticker, predicted_rank,
-                actual_change_pct, is_correct)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO accuracy_scores
+                   (prediction_id, model_name, date, session, ticker, predicted_rank,
+                    actual_change_pct, is_correct)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(prediction_id) DO UPDATE SET
+                   actual_change_pct = excluded.actual_change_pct,
+                   is_correct        = excluded.is_correct,
+                   calculated_at     = CURRENT_TIMESTAMP""",
             (prediction_id, model_name, date, session, ticker, rank, change_pct, is_correct),
         )
 
