@@ -2,24 +2,28 @@
 
 ---
 
-I built an AI stock analyst that queries 4 different AI models every morning and emails me their top picks before the market opens.
+A week ago I built an AI stock analyst that asks 4 different AI models — Claude, ChatGPT, Gemini, and Grok — for their top stock picks every morning before the market opens. It scores them at the close, tracks each model's accuracy over time, and runs a simulated $10,000 portfolio for each one to see who would actually be making money.
 
-Here's what it actually does:
+Today it lost a full day of data. Recovering it taught me more than building it did.
 
-Every day at 8 AM, the system pulls live data from 8 sources simultaneously — market indices, sector performance, Fear & Greed Index, pre-market movers, macro indicators (yields, crypto, commodities), the economic calendar, earnings reports, analyst upgrades, and Reddit sentiment. That full market briefing gets injected into Claude, ChatGPT, Grok, and Gemini — all at the same time.
+The system runs on a free hosting service that wipes the database every time I push new code. To prevent data loss, I had set up automatic backups that save everything to a folder and commit it to GitHub before every restart. I'd been running this for almost a week and assumed it was working.
 
-Each model returns 5 stock picks in structured JSON: ticker, LONG or SHORT direction, a conviction-weighted allocation percentage, reasoning, and confidence level. The allocations have to sum to 100% — so if a model puts 40% on one name, it's really saying something.
+It wasn't. The backup function was silently failing every single time, for two days straight. The fix turned out to be one of those bugs that nobody warns you about: the hosting service strips a hidden folder from my code when it deploys, and that hidden folder is what makes the backup function know what to back up. Without it, the function thought there was nothing to save and quietly skipped its job.
 
-At 6 PM, the system fetches end-of-day prices, scores each pick correct or incorrect (accounting for direction — a SHORT is only right if the stock fell), and updates a simulated $10,000 portfolio per model using their actual conviction weights. High conviction cuts both ways.
+I only found out when I pushed an unrelated update, the database wiped, and the most recent saved version was three days old. Two days of stock picks, accuracy scores, and portfolio data — gone.
 
-There's a live dashboard tracking accuracy and P&L for each model across any time window — all time, 1 month, 1 week, yesterday.
+So I rebuilt the backup system from scratch using a different approach that doesn't depend on that hidden folder existing. Tested it locally to make sure it actually worked this time. Pushed it. Watched the next backup successfully save to GitHub for the first time in days.
+
+Then I rebuilt the lost data piece by piece. The hosting service still had log files showing which stocks each AI had picked. I had email screenshots showing which direction (bet up or bet down) and how confident each AI was. I cross-referenced the two, manually entered everything back into the system, and double-checked it against the original emails. The picks are restored. The reasoning text each AI wrote — explaining *why* they picked what they picked — is permanently lost, and every recovered entry is now marked "[Reconstructed]" so I never pretend otherwise.
+
+While I was in there, I also redesigned the dashboard to look like a Bloomberg terminal. Dark theme, scrolling ticker tape across the top showing today's picks, live price updates every minute during market hours.
 
 **Live dashboard:** https://ai-stock-analyst-production-868a.up.railway.app
 
-The interesting part isn't just the picks — it's watching where the models agree and disagree. This morning, all four independently picked FCX LONG. But ChatGPT was bullish on Intel while Claude and Gemini both shorted it. Same data, opposite conclusions. End of day will tell us who was right.
+The interesting part of building something like this isn't the AI calls — those are easy. It's everything that happens around them: making sure the system survives its own updates, recovering when it doesn't, and being honest about what got lost. That's where most of this week has gone.
 
-I built this entirely by directing Claude as my technical partner — no prior experience deploying production Python apps. The system runs on Railway, stores data in SQLite, and sends email digests via Resend.
+Built with no prior production experience, directing Claude as a technical partner the entire way.
 
-If you're a developer who built something similar, I'd genuinely love to compare notes.
+If you've built something similar, I'd love to compare notes.
 
 ---
