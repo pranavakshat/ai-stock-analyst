@@ -362,12 +362,26 @@ def save_accuracy_score(prediction_id: int, model_name: str, date: str,
     direction  = direction.upper()
     is_correct = 1 if (change_pct > 0) == (direction == "LONG") else 0
     with get_conn() as conn:
+        # On UPSERT, overwrite ALL identifying fields — not just the volatile
+        # ones. The Apr 29 night incident exposed why: when restore_from_backups
+        # carries forward an old prediction_id that *coincidentally* matches a
+        # new auto-increment id assigned to a DIFFERENT prediction, the partial
+        # UPSERT was leaving stale (model_name, date, session, ticker) on the
+        # row while only updating change_pct + is_correct. The dashboard filters
+        # by (date, session), so the stale-date rows fell out of the filter and
+        # the chips appeared ungraded. Overwriting every field means a UPSERT
+        # always brings the row to the truth of the prediction it now refers to.
         conn.execute(
             """INSERT INTO accuracy_scores
                    (prediction_id, model_name, date, session, ticker, predicted_rank,
                     actual_change_pct, is_correct)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(prediction_id) DO UPDATE SET
+                   model_name        = excluded.model_name,
+                   date              = excluded.date,
+                   session           = excluded.session,
+                   ticker            = excluded.ticker,
+                   predicted_rank    = excluded.predicted_rank,
                    actual_change_pct = excluded.actual_change_pct,
                    is_correct        = excluded.is_correct,
                    calculated_at     = CURRENT_TIMESTAMP""",
@@ -667,19 +681,44 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
         # Load every accuracy_*.csv (not just the latest). UNIQUE(prediction_id)
         # already prevents duplicates, so iterating all files is safe.
         csv_files = sorted(backup_path.glob("accuracy_*.csv")) if backup_path.exists() else []
+        # IMPORTANT: do NOT trust prediction_id from the CSV. After a redeploy
+        # the predictions table gets fresh AUTOINCREMENT ids that have no
+        # relationship to the ids the CSV was written with. Re-resolve each
+        # row's prediction_id by looking up (model, date, session, ticker)
+        # against the just-restored predictions table. Rows with no live
+        # prediction match are dropped (the orphan cleanup further down would
+        # have deleted them anyway). This kills the entire ID-collision class
+        # of bug at restore time, before any UPSERT can land on a stale row.
         for csv_file in csv_files:
             try:
                 rows = list(csv.DictReader(csv_file.open()))
+                n_restored = 0
+                n_unmatched = 0
                 with get_conn() as conn:
                     for row in rows:
                         try:
+                            pred_lookup = conn.execute(
+                                "SELECT id FROM predictions "
+                                "WHERE model_name=? AND date=? AND session=? AND ticker=? "
+                                "LIMIT 1",
+                                (
+                                    row["model_name"],
+                                    row["date"],
+                                    row.get("session", "day"),
+                                    row["ticker"],
+                                ),
+                            ).fetchone()
+                            if not pred_lookup:
+                                n_unmatched += 1
+                                continue
+                            live_pred_id = pred_lookup["id"]
                             conn.execute(
                                 """INSERT OR IGNORE INTO accuracy_scores
                                    (prediction_id, model_name, date, session, ticker,
                                     predicted_rank, actual_change_pct, is_correct, calculated_at)
                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                                 (
-                                    int(row.get("prediction_id") or 0) or None,
+                                    live_pred_id,
                                     row["model_name"],
                                     row["date"],
                                     row.get("session", "day"),
@@ -690,10 +729,12 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
                                     row.get("calculated_at") or None,
                                 ),
                             )
+                            n_restored += 1
                             total += 1
                         except Exception:
                             pass
-                logger.info("Restored %d accuracy scores from %s", len(rows), csv_file.name)
+                logger.info("Restored %d accuracy scores from %s (skipped %d with no live prediction match)",
+                            n_restored, csv_file.name, n_unmatched)
             except Exception as exc:
                 logger.error("Failed to restore accuracy scores from %s: %s", csv_file.name, exc)
 
