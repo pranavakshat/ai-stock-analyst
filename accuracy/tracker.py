@@ -44,43 +44,62 @@ def score_predictions(target_date: str | None = None,
         return {}
 
     summary: dict[str, dict] = {}
+    n_total   = len(predictions)
+    n_scored  = 0
+    n_skipped = 0
+    n_errored = 0
 
     for pred in predictions:
         model  = pred["model_name"]
         ticker = pred["ticker"]
 
-        if ticker not in stock_results:
-            logger.warning("No stock data for %s — skipping", ticker)
-            continue
+        try:
+            if ticker not in stock_results:
+                logger.warning("No stock data for %s — skipping", ticker)
+                n_skipped += 1
+                continue
 
-        result     = stock_results[ticker]
-        change_pct = result["price_change_pct"]
-        direction  = pred.get("direction", "LONG").upper()
-        is_correct = (change_pct > 0) if direction == "LONG" else (change_pct < 0)
+            result     = stock_results[ticker]
+            change_pct = result["price_change_pct"]
+            direction  = (pred.get("direction") or "LONG").upper()
+            is_correct = (change_pct > 0) if direction == "LONG" else (change_pct < 0)
 
-        save_accuracy_score(
-            prediction_id=pred["id"],
-            model_name=model,
-            date=target_date,
-            ticker=ticker,
-            rank=pred["rank"],
-            change_pct=change_pct,
-            direction=direction,
-            session=session,
-        )
+            save_accuracy_score(
+                prediction_id=pred["id"],
+                model_name=model,
+                date=target_date,
+                ticker=ticker,
+                rank=pred["rank"],
+                change_pct=change_pct,
+                direction=direction,
+                session=session,
+            )
+            n_scored += 1
 
-        if model not in summary:
-            summary[model] = {"correct": 0, "total": 0, "picks": []}
-        summary[model]["total"]   += 1
-        summary[model]["correct"] += int(is_correct)
-        summary[model]["picks"].append({
-            "ticker": ticker, "change_pct": change_pct, "correct": is_correct,
-        })
+            if model not in summary:
+                summary[model] = {"correct": 0, "total": 0, "picks": []}
+            summary[model]["total"]   += 1
+            summary[model]["correct"] += int(is_correct)
+            summary[model]["picks"].append({
+                "ticker": ticker, "change_pct": change_pct, "correct": is_correct,
+            })
+        except Exception as exc:
+            # Critical: do NOT let a single bad save kill the whole iteration.
+            # Pre-fix, an exception here meant ChatGPT+Claude got scored but
+            # Gemini+Grok (later in the loop) never did — half the dashboard
+            # would be silently empty. Now each pred is isolated.
+            n_errored += 1
+            logger.exception(
+                "score_predictions: failed scoring %s/%s pred_id=%s ticker=%s — %s",
+                model, session, pred.get("id"), ticker, exc,
+            )
 
     for model, data in summary.items():
         pct = (data["correct"] / data["total"] * 100) if data["total"] else 0
         logger.info("[%s] %s accuracy on %s: %d/%d (%.1f%%)",
                     model, session, target_date, data["correct"], data["total"], pct)
+    logger.info("score_predictions(%s,%s): total=%d scored=%d skipped=%d errored=%d",
+                target_date, session, n_total, n_scored, n_skipped, n_errored)
 
     return summary
 
@@ -120,56 +139,76 @@ def score_overnight_picks(pick_date: str, next_open_date: str) -> dict[str, dict
             return {}
 
     summary: dict[str, dict] = {}
+    n_total   = len(predictions)
+    n_scored  = 0
+    n_skipped = 0
+    n_errored = 0
 
     for pred in predictions:
         model  = pred["model_name"]
         ticker = pred["ticker"]
 
-        prev = prev_results.get(ticker)
-        nxt  = next_results.get(ticker)
+        try:
+            prev = prev_results.get(ticker)
+            nxt  = next_results.get(ticker)
 
-        if not prev or not nxt:
-            logger.warning("Missing price data for %s overnight score — skipping", ticker)
-            continue
+            if not prev or not nxt:
+                logger.warning("Missing price data for %s overnight score — skipping", ticker)
+                n_skipped += 1
+                continue
 
-        entry_price = prev.get("close_price", 0)
-        exit_price  = nxt.get("open_price", 0)
+            entry_price = prev.get("close_price", 0)
+            exit_price  = nxt.get("open_price", 0)
 
-        if not entry_price or not exit_price:
-            continue
+            if not entry_price or not exit_price:
+                n_skipped += 1
+                continue
 
-        change_pct = (exit_price - entry_price) / entry_price * 100
-        direction  = pred.get("direction", "LONG").upper()
-        is_correct = (change_pct > 0) if direction == "LONG" else (change_pct < 0)
+            change_pct = (exit_price - entry_price) / entry_price * 100
+            direction  = (pred.get("direction") or "LONG").upper()
+            is_correct = (change_pct > 0) if direction == "LONG" else (change_pct < 0)
 
-        save_accuracy_score(
-            prediction_id=pred["id"],
-            model_name=model,
-            date=pick_date,
-            ticker=ticker,
-            rank=pred["rank"],
-            change_pct=round(change_pct, 4),
-            direction=direction,
-            session="overnight",
-        )
+            save_accuracy_score(
+                prediction_id=pred["id"],
+                model_name=model,
+                date=pick_date,
+                ticker=ticker,
+                rank=pred["rank"],
+                change_pct=round(change_pct, 4),
+                direction=direction,
+                session="overnight",
+            )
+            n_scored += 1
 
-        if model not in summary:
-            summary[model] = {"correct": 0, "total": 0, "picks": []}
-        summary[model]["total"]   += 1
-        summary[model]["correct"] += int(is_correct)
-        summary[model]["picks"].append({
-            "ticker": ticker,
-            "entry": round(entry_price, 2),
-            "exit":  round(exit_price, 2),
-            "change_pct": round(change_pct, 2),
-            "correct": is_correct,
-        })
+            if model not in summary:
+                summary[model] = {"correct": 0, "total": 0, "picks": []}
+            summary[model]["total"]   += 1
+            summary[model]["correct"] += int(is_correct)
+            summary[model]["picks"].append({
+                "ticker": ticker,
+                "entry": round(entry_price, 2),
+                "exit":  round(exit_price, 2),
+                "change_pct": round(change_pct, 2),
+                "correct": is_correct,
+            })
+        except Exception as exc:
+            # Same isolation as score_predictions — see comment there. A single
+            # bad save (FK violation, weird tick price, NULL direction, etc.)
+            # must NOT silently terminate the whole loop. Each pred handled
+            # independently; failures logged and counted but the loop continues.
+            n_errored += 1
+            logger.exception(
+                "score_overnight_picks: failed scoring %s/%s pred_id=%s ticker=%s — %s",
+                model, "overnight", pred.get("id"), ticker, exc,
+            )
 
     for model, data in summary.items():
         pct = (data["correct"] / data["total"] * 100) if data["total"] else 0
         logger.info("[%s] Overnight accuracy %s→%s: %d/%d (%.1f%%)",
                     model, pick_date, next_open_date,
                     data["correct"], data["total"], pct)
+    logger.info("score_overnight_picks(%s→%s): total=%d scored=%d skipped=%d errored=%d",
+                pick_date, next_open_date, n_total, n_scored, n_skipped, n_errored)
 
     return summary
 
