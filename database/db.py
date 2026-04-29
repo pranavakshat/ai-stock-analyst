@@ -84,7 +84,7 @@ def init_db():
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS accuracy_scores_new (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    prediction_id   INTEGER REFERENCES predictions(id),
+                    prediction_id   INTEGER REFERENCES predictions(id) ON DELETE CASCADE,
                     model_name      TEXT    NOT NULL,
                     date            TEXT    NOT NULL,
                     session         TEXT    DEFAULT 'day',
@@ -108,6 +108,47 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_accuracy_model_date ON accuracy_scores(model_name, date);
             """)
             logger.info("Migration: accuracy_scores rebuilt with UNIQUE(prediction_id)")
+
+        # Second migration on the same table: ensure ON DELETE CASCADE is on the
+        # prediction_id foreign key. Older databases that already had the
+        # UNIQUE(prediction_id) migration may still have the plain
+        # `REFERENCES predictions(id)` clause without cascade. We need cascade
+        # so that deleting a prediction (e.g. via /api/admin/delete-session)
+        # automatically removes any accuracy_scores row pointing at it,
+        # closing the orphan-row class of bug exposed Apr 28 night.
+        acc_table_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='accuracy_scores'"
+        ).fetchone()
+        acc_table_sql = (acc_table_row["sql"] or "") if acc_table_row else ""
+        if "ON DELETE CASCADE" not in acc_table_sql:
+            logger.info("Migration: rebuilding accuracy_scores with ON DELETE CASCADE...")
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS accuracy_scores_cascade (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prediction_id   INTEGER REFERENCES predictions(id) ON DELETE CASCADE,
+                    model_name      TEXT    NOT NULL,
+                    date            TEXT    NOT NULL,
+                    session         TEXT    DEFAULT 'day',
+                    ticker          TEXT    NOT NULL,
+                    predicted_rank  INTEGER,
+                    actual_change_pct REAL,
+                    is_correct      INTEGER,
+                    calculated_at   TEXT    DEFAULT (datetime('now')),
+                    UNIQUE(prediction_id)
+                );
+                INSERT OR IGNORE INTO accuracy_scores_cascade
+                    (prediction_id, model_name, date, session, ticker,
+                     predicted_rank, actual_change_pct, is_correct, calculated_at)
+                SELECT prediction_id, model_name, date, session, ticker,
+                       predicted_rank, actual_change_pct, is_correct, calculated_at
+                FROM accuracy_scores;
+                DROP TABLE accuracy_scores;
+                ALTER TABLE accuracy_scores_cascade RENAME TO accuracy_scores;
+                CREATE INDEX IF NOT EXISTS idx_accuracy_model      ON accuracy_scores(model_name);
+                CREATE INDEX IF NOT EXISTS idx_accuracy_date       ON accuracy_scores(date);
+                CREATE INDEX IF NOT EXISTS idx_accuracy_model_date ON accuracy_scores(model_name, date);
+            """)
+            logger.info("Migration: accuracy_scores rebuilt with ON DELETE CASCADE")
         # portfolio_values: add session column + rebuild with new UNIQUE constraint
         port_cols = [r[1] for r in conn.execute("PRAGMA table_info(portfolio_values)").fetchall()]
         if "session" not in port_cols:
@@ -692,6 +733,24 @@ def restore_from_backups(backup_dir: str | None = None) -> int:
                 logger.info("Restored %d portfolio rows from %s", len(rows), csv_file.name)
             except Exception as exc:
                 logger.error("Failed to restore portfolio values from %s: %s", csv_file.name, exc)
+
+    # ── Orphan cleanup ───────────────────────────────────────────────────────
+    # If a CSV restore brought back accuracy_scores rows whose prediction_id
+    # no longer points at any prediction, the dashboard's score-lookup-by-id
+    # can match an unrelated current prediction by ID coincidence and show the
+    # wrong ticker's % change. Belt-and-braces against the orphan-row class
+    # of bug exposed Apr 28 night. ON DELETE CASCADE prevents new orphans from
+    # forming during normal operation; this cleanup catches anything that
+    # snuck in via CSV restore from before the cascade migration.
+    with get_conn() as conn:
+        orphans = conn.execute(
+            "DELETE FROM accuracy_scores "
+            "WHERE prediction_id IS NOT NULL "
+            "  AND prediction_id NOT IN (SELECT id FROM predictions)"
+        ).rowcount
+    if orphans:
+        logger.info("Startup orphan cleanup: removed %d accuracy_scores rows "
+                    "whose prediction_id no longer exists.", orphans)
 
     if total:
         logger.info("=== Startup restore complete: %d total rows ===", total)
