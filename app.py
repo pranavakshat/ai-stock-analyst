@@ -708,6 +708,53 @@ def api_whoami():
     return jsonify({"status": "ok", "auth": "valid"})
 
 
+@app.route("/api/admin/clear-scores", methods=["POST"])
+@require_admin
+def api_clear_scores():
+    """
+    Hard-delete accuracy_scores rows for a specific (date, session). Does NOT
+    touch predictions or portfolio_values. Useful when accuracy_scores has
+    accumulated orphan rows whose prediction_id no longer points at a real
+    prediction (e.g. after an unauthorized run wrote scores, then the
+    underlying predictions got deleted, leaving orphans that the next
+    score-run UPSERT can't touch because UPSERT keys on prediction_id).
+
+    Required query params:
+      ?date=YYYY-MM-DD
+      ?session=day | overnight
+      ?confirm=true
+    """
+    from database.db import get_conn
+
+    target_date = (request.args.get("date") or "").strip()
+    sess        = (request.args.get("session") or "").strip()
+    confirm     = (request.args.get("confirm") or "").strip().lower()
+
+    if not target_date or sess not in ("day", "overnight"):
+        return jsonify({
+            "error": "Required: ?date=YYYY-MM-DD&session=day|overnight",
+        }), 400
+    if confirm != "true":
+        return jsonify({
+            "error": "Pass &confirm=true to actually delete. This is a hard delete.",
+            "would_delete": {"date": target_date, "session": sess, "table": "accuracy_scores"},
+        }), 400
+
+    with get_conn() as conn:
+        n = conn.execute(
+            "DELETE FROM accuracy_scores WHERE date=? AND session=?",
+            (target_date, sess),
+        ).rowcount
+
+    logger.warning("Admin clear-scores %s/%s: deleted %d rows", target_date, sess, n)
+    return jsonify({
+        "status": "ok",
+        "date": target_date,
+        "session": sess,
+        "accuracy_scores_deleted": n,
+    })
+
+
 @app.route("/api/admin/delete-session", methods=["POST"])
 @require_admin
 def api_delete_session():
