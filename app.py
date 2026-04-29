@@ -1008,18 +1008,60 @@ def api_score_from_cache():
         return jsonify({"status": "ok", "message": "no predictions", "scored": 0}), 200
 
     if sess == "day":
-        entry_lookup = exit_lookup = get_stock_results_by_date(target)
-        entry_field, exit_field = "open_price", "close_price"
         compare_date = target
+        entry_field, exit_field = "open_price", "close_price"
+        needed_dates = [target]
     else:
         d = datetime.strptime(target, "%Y-%m-%d").date()
         nxt = d + timedelta(days=1)
         while nxt.weekday() >= 5:
             nxt += timedelta(days=1)
-        compare_date  = nxt.isoformat()
-        entry_lookup  = get_stock_results_by_date(target)
-        exit_lookup   = get_stock_results_by_date(compare_date)
+        compare_date = nxt.isoformat()
         entry_field, exit_field = "close_price", "open_price"
+        needed_dates = [target, compare_date]
+
+    # On Railway, stock_results gets wiped on every redeploy and is NOT in
+    # the CSV restore set, so the cache is cold whenever we redeploy. Refetch
+    # any missing dates from yfinance so this endpoint self-heals instead of
+    # returning 20 'no cached price' skips. We write back into stock_results
+    # via save_stock_result so subsequent reads will hit the cache.
+    from database.db import save_stock_result
+    needed_tickers = sorted({p["ticker"] for p in preds})
+    fetch_log = []
+    for d_iso in needed_dates:
+        cached = get_stock_results_by_date(d_iso) or {}
+        missing = [t for t in needed_tickers if t not in cached]
+        if not missing:
+            fetch_log.append({"date": d_iso, "skipped": "all cached"})
+            continue
+        try:
+            import yfinance as yf
+            d_dt   = datetime.strptime(d_iso, "%Y-%m-%d").date()
+            d_next = (d_dt + timedelta(days=1)).isoformat()
+            got = []
+            for tk in missing:
+                try:
+                    hist = yf.Ticker(tk).history(start=d_iso, end=d_next, auto_adjust=True)
+                    if hist.empty:
+                        continue
+                    row = hist.iloc[0]
+                    op  = float(row["Open"])
+                    cl  = float(row["Close"])
+                    save_stock_result(d_iso, tk, op, cl, int(row.get("Volume", 0)))
+                    got.append(tk)
+                except Exception as inner:
+                    logger.warning("score-from-cache fetch %s on %s: %s", tk, d_iso, inner)
+            fetch_log.append({"date": d_iso, "requested": missing, "fetched": got,
+                              "still_missing": [t for t in missing if t not in got]})
+        except Exception as exc:
+            logger.exception("score-from-cache: yfinance import/fetch on %s failed: %s", d_iso, exc)
+            fetch_log.append({"date": d_iso, "error": str(exc), "requested": missing})
+
+    if sess == "day":
+        entry_lookup = exit_lookup = get_stock_results_by_date(target)
+    else:
+        entry_lookup = get_stock_results_by_date(target)
+        exit_lookup  = get_stock_results_by_date(compare_date)
 
     n_total = len(preds)
     n_scored = n_skipped = n_errored = 0
@@ -1072,6 +1114,7 @@ def api_score_from_cache():
         "skipped":      n_skipped,
         "errored":      n_errored,
         "detail":       detail,
+        "fetch_log":    fetch_log,
         "auto_backup":  backup,
     })
 
