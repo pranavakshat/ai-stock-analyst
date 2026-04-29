@@ -95,15 +95,43 @@ from database.db import restore_from_backups
 restored = restore_from_backups()
 logger.info("Startup restore: %d rows loaded from backup CSVs.", restored)
 
+# Integrity scan — surfaces silent partial-scoring in deploy logs immediately.
+# Runs at the (date, session, model, ticker) granularity, where the old
+# backfill_unscored_dates only checked at (date, session). If you see a
+# "GAP" line in the logs, fire POST /api/admin/auto-heal once.
+try:
+    from accuracy.integrity import log_integrity_warnings_at_startup
+    log_integrity_warnings_at_startup()
+except Exception as _intex:
+    logger.warning("Startup integrity scan failed (non-fatal): %s", _intex)
+
 # Always kick off a background backfill so accuracy/portfolio data is current
 # after every deploy (even when predictions were already in the DB).
+# Now layered with auto-heal: backfill handles whole-pair gaps, auto-heal
+# picks up per-model gaps within an already-scored pair.
 import threading
 def _startup_backfill():
     try:
         from accuracy.tracker import backfill_unscored_dates
+        from accuracy.integrity import check_scoring_integrity
         from database.db import backup_all_to_csv
         n = backfill_unscored_dates()
         logger.info("Startup backfill complete: %d date/session combos scored.", n)
+
+        # After backfill, run integrity scan one more time. If gaps remain
+        # (i.e. per-model holes inside a pair the backfill considered "done"),
+        # auto-heal them via the same path /api/admin/auto-heal uses.
+        try:
+            post_report = check_scoring_integrity()
+            if not post_report["clean"]:
+                logger.warning(
+                    "Post-backfill integrity scan: %d gaps remain — auto-healing.",
+                    post_report["summary"]["total_gaps"],
+                )
+                _heal_gaps_inline(post_report["gaps"])
+        except Exception as iex:
+            logger.warning("Post-backfill integrity heal failed (non-fatal): %s", iex)
+
         if n > 0:
             try:
                 paths = backup_all_to_csv()
@@ -112,6 +140,99 @@ def _startup_backfill():
                 logger.warning("Post-backfill backup failed (non-fatal): %s", bex)
     except Exception as exc:
         logger.error("Startup backfill failed: %s", exc, exc_info=True)
+
+
+def _heal_gaps_inline(gaps: list[dict]) -> None:
+    """
+    Inline gap healing for startup. Same logic as POST /api/admin/auto-heal
+    but no Flask request/response. Safe to call from a background thread.
+
+    Idempotent: UPSERT semantics on accuracy_scores mean repeated calls
+    just refresh `calculated_at` and re-write identical numbers.
+    """
+    from database.db import (
+        get_predictions_by_date, get_stock_results_by_date,
+        save_accuracy_score, save_stock_result,
+    )
+    from datetime import datetime, timedelta
+
+    pairs: dict[tuple, list] = {}
+    for g in gaps:
+        pairs.setdefault((g["date"], g["session"]), []).append(g)
+
+    for (target, sess), _gs in sorted(pairs.items()):
+        try:
+            preds = get_predictions_by_date(target, session=sess)
+            if not preds:
+                continue
+            if sess == "day":
+                compare_date = target
+                entry_field, exit_field = "open_price", "close_price"
+                needed_dates = [target]
+            else:
+                d = datetime.strptime(target, "%Y-%m-%d").date()
+                nxt = d + timedelta(days=1)
+                while nxt.weekday() >= 5:
+                    nxt += timedelta(days=1)
+                compare_date = nxt.isoformat()
+                entry_field, exit_field = "close_price", "open_price"
+                needed_dates = [target, compare_date]
+
+            needed_tickers = sorted({p["ticker"] for p in preds})
+            for d_iso in needed_dates:
+                cached  = get_stock_results_by_date(d_iso) or {}
+                missing = [t for t in needed_tickers if t not in cached]
+                if not missing:
+                    continue
+                try:
+                    import yfinance as yf
+                    d_dt   = datetime.strptime(d_iso, "%Y-%m-%d").date()
+                    d_next = (d_dt + timedelta(days=1)).isoformat()
+                    for tk in missing:
+                        try:
+                            hist = yf.Ticker(tk).history(start=d_iso, end=d_next, auto_adjust=True)
+                            if hist.empty:
+                                continue
+                            row = hist.iloc[0]
+                            save_stock_result(d_iso, tk,
+                                              float(row["Open"]), float(row["Close"]),
+                                              int(row.get("Volume", 0)))
+                        except Exception as inner:
+                            logger.warning("startup-heal fetch %s on %s: %s", tk, d_iso, inner)
+                except Exception as exc:
+                    logger.warning("startup-heal yfinance on %s failed: %s", d_iso, exc)
+
+            entry_lookup = get_stock_results_by_date(target) if sess == "day" else get_stock_results_by_date(target)
+            exit_lookup  = get_stock_results_by_date(target) if sess == "day" else get_stock_results_by_date(compare_date)
+
+            n_scored = n_skipped = n_errored = 0
+            for p in preds:
+                try:
+                    t = p["ticker"]
+                    e = (entry_lookup or {}).get(t, {}).get(entry_field) or 0
+                    x = (exit_lookup  or {}).get(t, {}).get(exit_field)  or 0
+                    if not e or not x:
+                        n_skipped += 1
+                        continue
+                    change_pct = (x - e) / e * 100
+                    direction  = (p.get("direction") or "LONG").upper()
+                    save_accuracy_score(
+                        prediction_id=p["id"], model_name=p["model_name"],
+                        date=target, ticker=t, rank=p["rank"],
+                        change_pct=round(change_pct, 4),
+                        direction=direction, session=sess,
+                    )
+                    n_scored += 1
+                except Exception as exc:
+                    n_errored += 1
+                    logger.warning("startup-heal: %s/%s/%s failed: %s",
+                                   p.get("model_name"), target, p.get("ticker"), exc)
+            logger.warning("startup-heal(%s,%s): scored=%d skipped=%d errored=%d",
+                           target, sess, n_scored, n_skipped, n_errored)
+        except Exception as exc:
+            logger.warning("startup-heal pair %s/%s failed: %s", target, sess, exc)
+
+
 threading.Thread(target=_startup_backfill, daemon=True).start()
 
 from scheduler import create_scheduler
@@ -965,6 +1086,177 @@ def api_manual_score():
         "direction":      direction,
         "is_correct":     bool(is_correct),
         "auto_backup":    backup,
+    })
+
+
+@app.route("/api/admin/integrity-check", methods=["GET"])
+@require_admin
+def api_integrity_check():
+    """
+    Read-only audit. Returns every (date, session, model) combination where
+    accuracy_scores has fewer rows than predictions. Surfaces silent partial
+    scoring before it shows up on the dashboard.
+
+    Optional query params:
+      ?start=YYYY-MM-DD   default = 7 days ago
+      ?end=YYYY-MM-DD     default = today
+
+    Response:
+      { "clean": true,  "audited": {...}, "gaps": [], "summary": {...} }
+      or
+      { "clean": false, "gaps": [{date,session,model,missing_tickers,...}], ... }
+    """
+    from accuracy.integrity import check_scoring_integrity
+    start = (request.args.get("start") or "").strip() or None
+    end   = (request.args.get("end")   or "").strip() or None
+    try:
+        report = check_scoring_integrity(start_date=start, end_date=end)
+    except Exception as exc:
+        logger.exception("integrity-check failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(report)
+
+
+@app.route("/api/admin/auto-heal", methods=["POST"])
+@require_admin
+def api_auto_heal():
+    """
+    One-shot heal: run integrity-check, then for each (date, session) with
+    gaps, internally invoke score-from-cache to refill them. Idempotent
+    thanks to UPSERT — safe to call repeatedly.
+
+    Optional query param:
+      ?dry_run=true   → returns the plan without mutating
+
+    Auto-backs-up after successful heals.
+    """
+    from accuracy.integrity import check_scoring_integrity
+    from database.db import (
+        get_predictions_by_date, get_stock_results_by_date,
+        save_accuracy_score, save_stock_result,
+    )
+    from datetime import datetime, timedelta
+
+    dry = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+
+    try:
+        report = check_scoring_integrity()
+    except Exception as exc:
+        logger.exception("auto-heal: integrity scan failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+    if report["clean"]:
+        return jsonify({"status": "ok", "message": "no gaps", "report": report})
+
+    # Group gaps by (date, session) so each is healed in one pass
+    pairs: dict[tuple, list] = {}
+    for g in report["gaps"]:
+        pairs.setdefault((g["date"], g["session"]), []).append(g)
+
+    plan = [{"date": d, "session": s, "models_with_gaps": [g["model"] for g in gs]}
+            for (d, s), gs in sorted(pairs.items())]
+
+    if dry:
+        return jsonify({"status": "ok", "dry_run": True, "plan": plan, "report": report})
+
+    healed: list[dict] = []
+    for (target, sess), _gs in sorted(pairs.items()):
+        try:
+            preds = get_predictions_by_date(target, session=sess)
+            if not preds:
+                healed.append({"date": target, "session": sess, "result": "no predictions"})
+                continue
+
+            # Build needed_dates and entry/exit fields exactly like score-from-cache
+            if sess == "day":
+                compare_date = target
+                entry_field, exit_field = "open_price", "close_price"
+                needed_dates = [target]
+            else:
+                d = datetime.strptime(target, "%Y-%m-%d").date()
+                nxt = d + timedelta(days=1)
+                while nxt.weekday() >= 5:
+                    nxt += timedelta(days=1)
+                compare_date = nxt.isoformat()
+                entry_field, exit_field = "close_price", "open_price"
+                needed_dates = [target, compare_date]
+
+            # Refetch any missing prices
+            needed_tickers = sorted({p["ticker"] for p in preds})
+            for d_iso in needed_dates:
+                cached  = get_stock_results_by_date(d_iso) or {}
+                missing = [t for t in needed_tickers if t not in cached]
+                if not missing:
+                    continue
+                try:
+                    import yfinance as yf
+                    d_dt   = datetime.strptime(d_iso, "%Y-%m-%d").date()
+                    d_next = (d_dt + timedelta(days=1)).isoformat()
+                    for tk in missing:
+                        try:
+                            hist = yf.Ticker(tk).history(start=d_iso, end=d_next, auto_adjust=True)
+                            if hist.empty:
+                                continue
+                            row = hist.iloc[0]
+                            save_stock_result(d_iso, tk,
+                                              float(row["Open"]), float(row["Close"]),
+                                              int(row.get("Volume", 0)))
+                        except Exception as inner:
+                            logger.warning("auto-heal fetch %s on %s: %s", tk, d_iso, inner)
+                except Exception as exc:
+                    logger.exception("auto-heal: yfinance fetch on %s failed: %s", d_iso, exc)
+
+            entry_lookup = get_stock_results_by_date(target)        if sess == "day"  else get_stock_results_by_date(target)
+            exit_lookup  = get_stock_results_by_date(target)        if sess == "day"  else get_stock_results_by_date(compare_date)
+
+            n_total = n_scored = n_skipped = n_errored = 0
+            for p in preds:
+                n_total += 1
+                try:
+                    t = p["ticker"]
+                    e = (entry_lookup or {}).get(t, {}).get(entry_field) or 0
+                    x = (exit_lookup  or {}).get(t, {}).get(exit_field)  or 0
+                    if not e or not x:
+                        n_skipped += 1
+                        continue
+                    change_pct = (x - e) / e * 100
+                    direction  = (p.get("direction") or "LONG").upper()
+                    save_accuracy_score(
+                        prediction_id=p["id"], model_name=p["model_name"],
+                        date=target, ticker=t, rank=p["rank"],
+                        change_pct=round(change_pct, 4),
+                        direction=direction, session=sess,
+                    )
+                    n_scored += 1
+                except Exception as exc:
+                    n_errored += 1
+                    logger.exception("auto-heal: failed %s/%s: %s",
+                                     p.get("model_name"), p.get("ticker"), exc)
+
+            logger.warning("auto-heal(%s,%s): total=%d scored=%d skipped=%d errored=%d",
+                           target, sess, n_total, n_scored, n_skipped, n_errored)
+            healed.append({"date": target, "session": sess,
+                           "total": n_total, "scored": n_scored,
+                           "skipped": n_skipped, "errored": n_errored})
+        except Exception as exc:
+            logger.exception("auto-heal pair %s/%s failed: %s", target, sess, exc)
+            healed.append({"date": target, "session": sess, "error": str(exc)})
+
+    backup = _auto_backup_after_admin_mutation(label="auto-heal")
+
+    # Re-run integrity check post-heal so caller sees what (if anything) is left
+    try:
+        post = check_scoring_integrity()
+    except Exception:
+        post = {"clean": None, "error": "post-check failed"}
+
+    return jsonify({
+        "status":       "ok",
+        "before":       report["summary"],
+        "healed":       healed,
+        "after":        post.get("summary"),
+        "post_clean":   post.get("clean"),
+        "auto_backup":  backup,
     })
 
 

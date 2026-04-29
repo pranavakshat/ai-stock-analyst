@@ -101,6 +101,15 @@ def score_predictions(target_date: str | None = None,
     logger.info("score_predictions(%s,%s): total=%d scored=%d skipped=%d errored=%d",
                 target_date, session, n_total, n_scored, n_skipped, n_errored)
 
+    # Defense-in-depth: query DB and confirm row count matches counter.
+    # If save_accuracy_score silently no-op'd (UPSERT bug, FK race, etc.)
+    # the counter would say "scored=20" while the DB has fewer rows.
+    try:
+        from accuracy.integrity import post_scoring_invariant
+        post_scoring_invariant(target_date, session, n_scored)
+    except Exception as _exc:
+        logger.warning("post_scoring_invariant call failed (non-fatal): %s", _exc)
+
     return summary
 
 
@@ -209,6 +218,13 @@ def score_overnight_picks(pick_date: str, next_open_date: str) -> dict[str, dict
                     data["correct"], data["total"], pct)
     logger.info("score_overnight_picks(%s→%s): total=%d scored=%d skipped=%d errored=%d",
                 pick_date, next_open_date, n_total, n_scored, n_skipped, n_errored)
+
+    # Defense-in-depth: see comment on the same call in score_predictions.
+    try:
+        from accuracy.integrity import post_scoring_invariant
+        post_scoring_invariant(pick_date, "overnight", n_scored)
+    except Exception as _exc:
+        logger.warning("post_scoring_invariant call failed (non-fatal): %s", _exc)
 
     return summary
 
