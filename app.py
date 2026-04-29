@@ -849,6 +849,233 @@ def api_backup_now():
     })
 
 
+def _auto_backup_after_admin_mutation(label: str) -> dict:
+    """
+    Internal helper: dump CSVs and try to commit them. Used at the tail of
+    admin mutation endpoints so a Railway redeploy can't lose the change.
+    Mirrors api_backup_now() but does not require a separate HTTP call.
+    Never raises — failures are reported in the dict.
+    """
+    from database.db import backup_all_to_csv
+    out = {"csvs": [], "git_push": False, "push_error": None, "csv_error": None}
+    try:
+        paths = backup_all_to_csv()
+        out["csvs"] = list(paths.values()) if isinstance(paths, dict) else paths
+    except Exception as exc:
+        out["csv_error"] = str(exc)
+        logger.error("auto_backup: backup_all_to_csv failed: %s", exc, exc_info=True)
+        return out
+    try:
+        from git_backup import git_autocommit_backups
+        out["git_push"] = git_autocommit_backups(label=label)
+    except Exception as exc:
+        out["push_error"] = str(exc)
+        logger.warning("auto_backup: git_autocommit_backups failed: %s", exc)
+    return out
+
+
+@app.route("/api/admin/manual-score", methods=["POST"])
+@require_admin
+def api_manual_score():
+    """
+    Manually inject one accuracy_scores row. Used when yfinance is wrong
+    (delisted-but-actually-trading tickers like SAVA) or when an iteration
+    bug silently dropped a model's picks and we need to backfill.
+
+    JSON body:
+      {
+        "model":      "chatgpt",          # required
+        "date":       "2026-04-29",       # required (YYYY-MM-DD, the prediction date)
+        "session":    "day",              # required: "day" or "overnight"
+        "ticker":     "SAVA",             # required
+        "change_pct": -3.19,              # required (signed pct, e.g. -3.19 for -3.19%)
+        "direction":  "LONG"              # optional, default LONG
+      }
+
+    Behavior:
+      - Looks up the prediction by (model, date, session, ticker). 404 if not found.
+      - Writes accuracy_scores via the same UPSERT path as the scheduled scorer.
+      - Auto-calls backup_all_to_csv + git_autocommit_backups so the change
+        survives the next Railway redeploy. NO manual /backup-now needed.
+    """
+    from database.db import get_conn, save_accuracy_score
+
+    body = request.get_json(silent=True) or {}
+    model      = (body.get("model") or "").strip().lower()
+    target     = (body.get("date") or "").strip()
+    sess       = (body.get("session") or "").strip().lower()
+    ticker     = (body.get("ticker") or "").strip().upper()
+    direction  = (body.get("direction") or "LONG").strip().upper()
+    change_raw = body.get("change_pct")
+
+    if not model or not target or sess not in ("day", "overnight") or not ticker:
+        return jsonify({
+            "error": "Required JSON: model, date, session (day|overnight), ticker, change_pct",
+        }), 400
+    try:
+        change_pct = float(change_raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": f"change_pct must be a number, got {change_raw!r}"}), 400
+    if direction not in ("LONG", "SHORT"):
+        return jsonify({"error": "direction must be LONG or SHORT"}), 400
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, rank FROM predictions "
+            "WHERE model_name=? AND date=? AND session=? AND ticker=? "
+            "LIMIT 1",
+            (model, target, sess, ticker),
+        ).fetchone()
+
+    if not row:
+        return jsonify({
+            "error": "No matching prediction",
+            "lookup": {"model": model, "date": target, "session": sess, "ticker": ticker},
+        }), 404
+
+    pred_id = row["id"]
+    rank    = row["rank"]
+
+    save_accuracy_score(
+        prediction_id=pred_id,
+        model_name=model,
+        date=target,
+        ticker=ticker,
+        rank=rank,
+        change_pct=round(change_pct, 4),
+        direction=direction,
+        session=sess,
+    )
+    logger.warning(
+        "Admin manual-score: %s %s %s %s = %.4f%% (LONG=%s) pred_id=%s",
+        model, target, sess, ticker, change_pct, direction == "LONG", pred_id,
+    )
+
+    backup = _auto_backup_after_admin_mutation(label="manual-score")
+
+    is_correct = 1 if (change_pct > 0) == (direction == "LONG") else 0
+    return jsonify({
+        "status":         "ok",
+        "prediction_id":  pred_id,
+        "model":          model,
+        "date":           target,
+        "session":        sess,
+        "ticker":         ticker,
+        "change_pct":     round(change_pct, 4),
+        "direction":      direction,
+        "is_correct":     bool(is_correct),
+        "auto_backup":    backup,
+    })
+
+
+@app.route("/api/admin/score-from-cache", methods=["POST"])
+@require_admin
+def api_score_from_cache():
+    """
+    Bulk-recompute accuracy_scores for a (date, session) using ONLY prices
+    already cached in stock_results. Bypasses every external fetch path —
+    useful when yfinance is intermittently failing for some models but the
+    prices were captured for others on the same day.
+
+    Required query params:
+      ?date=YYYY-MM-DD
+      ?session=day | overnight
+
+    Behavior:
+      - day session:       entry=open(date), exit=close(date)
+      - overnight session: entry=close(date), exit=open(next_market_day)
+        (next_market_day defaults to date+1; weekends auto-skipped)
+
+    Iterates predictions one-by-one with the same try/except isolation as
+    score_predictions, so a single missing-price ticker can't kill the loop.
+    Auto-backs-up at the end. Idempotent thanks to UPSERT on prediction_id.
+    """
+    from database.db import (
+        get_conn,
+        get_predictions_by_date,
+        get_stock_results_by_date,
+        save_accuracy_score,
+    )
+    from datetime import datetime, timedelta
+
+    target = (request.args.get("date") or "").strip()
+    sess   = (request.args.get("session") or "").strip().lower()
+    if not target or sess not in ("day", "overnight"):
+        return jsonify({"error": "Required: ?date=YYYY-MM-DD&session=day|overnight"}), 400
+
+    preds = get_predictions_by_date(target, session=sess)
+    if not preds:
+        return jsonify({"status": "ok", "message": "no predictions", "scored": 0}), 200
+
+    if sess == "day":
+        entry_lookup = exit_lookup = get_stock_results_by_date(target)
+        entry_field, exit_field = "open_price", "close_price"
+        compare_date = target
+    else:
+        d = datetime.strptime(target, "%Y-%m-%d").date()
+        nxt = d + timedelta(days=1)
+        while nxt.weekday() >= 5:
+            nxt += timedelta(days=1)
+        compare_date  = nxt.isoformat()
+        entry_lookup  = get_stock_results_by_date(target)
+        exit_lookup   = get_stock_results_by_date(compare_date)
+        entry_field, exit_field = "close_price", "open_price"
+
+    n_total = len(preds)
+    n_scored = n_skipped = n_errored = 0
+    detail = []
+
+    for p in preds:
+        try:
+            t = p["ticker"]
+            e = (entry_lookup or {}).get(t, {}).get(entry_field) or 0
+            x = (exit_lookup  or {}).get(t, {}).get(exit_field)  or 0
+            if not e or not x:
+                n_skipped += 1
+                detail.append({"ticker": t, "model": p["model_name"], "status": "skipped",
+                               "reason": "no cached price",
+                               "entry": e, "exit": x})
+                continue
+            change_pct = (x - e) / e * 100
+            direction  = (p.get("direction") or "LONG").upper()
+            save_accuracy_score(
+                prediction_id=p["id"],
+                model_name=p["model_name"],
+                date=target,
+                ticker=t,
+                rank=p["rank"],
+                change_pct=round(change_pct, 4),
+                direction=direction,
+                session=sess,
+            )
+            n_scored += 1
+            detail.append({"ticker": t, "model": p["model_name"],
+                           "status": "scored", "change_pct": round(change_pct, 4)})
+        except Exception as exc:
+            n_errored += 1
+            logger.exception("score-from-cache: failed %s/%s: %s", p.get("model_name"), p.get("ticker"), exc)
+            detail.append({"ticker": p.get("ticker"), "model": p.get("model_name"),
+                           "status": "errored", "error": str(exc)})
+
+    logger.warning("Admin score-from-cache(%s,%s): total=%d scored=%d skipped=%d errored=%d",
+                   target, sess, n_total, n_scored, n_skipped, n_errored)
+
+    backup = _auto_backup_after_admin_mutation(label="score-from-cache")
+
+    return jsonify({
+        "status":       "ok",
+        "date":         target,
+        "session":      sess,
+        "compare_date": compare_date,
+        "total":        n_total,
+        "scored":       n_scored,
+        "skipped":      n_skipped,
+        "errored":      n_errored,
+        "detail":       detail,
+        "auto_backup":  backup,
+    })
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
